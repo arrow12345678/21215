@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # install.sh
-# Script to install the Video Editor GUI application and create a desktop launcher.
+# Script to install the Video Editor GUI application, its dependencies, and a desktop launcher.
 #
 set -euo pipefail
 
@@ -13,7 +13,7 @@ VENV_DIR="${INSTALL_DIR}/venv"
 
 # Name of the main application script and runner script
 APP_PY_FILE="video_editor_gui.py"
-RUNNER_SCRIPT="run_video_editor.sh"
+# RUNNER_SCRIPT is no longer needed.
 ICON_FILE_PNG="video_editor_icon.png"
 ICON_FILE_SVG="video_editor_icon.svg"
 
@@ -36,6 +36,32 @@ echo_error() {
     exit 1
 }
 
+# --- Dependency Management ---
+check_and_install_packages() {
+    # Define required packages
+    PACKAGES=("python3-venv" "python3-tk" "ffmpeg")
+    MISSING_PACKAGES=()
+
+    echo_info "Checking for required system packages..."
+    if ! command -v dpkg-query >/dev/null 2>&1; then
+        echo_error "dpkg not found. This script is intended for Debian-based systems (like Ubuntu)."
+    fi
+
+    for pkg in "${PACKAGES[@]}"; do
+        if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+            MISSING_PACKAGES+=("$pkg")
+        fi
+    done
+
+    if [ ${#MISSING_PACKAGES[@]} -ne 0 ]; then
+        echo_info "The following required packages are missing: ${MISSING_PACKAGES[*]}"
+        echo_info "Sudo privileges are required to install them."
+        sudo apt-get update && sudo apt-get install -y "${MISSING_PACKAGES[@]}" || { echo_error "Failed to install system dependencies. Please install them manually and re-run."; exit 1; }
+    else
+        echo_info "All required system packages are already installed."
+    fi
+}
+
 # --- Default Icon ---
 # Simple SVG icon as a fallback
 create_default_icon() {
@@ -52,9 +78,12 @@ EOF
 main() {
     echo_info "Starting Video Editor GUI installation..."
 
+    # 0. Check and install system dependencies
+    check_and_install_packages
+
     # 1. Check for required script files
-    if [ ! -f "$APP_PY_FILE" ] || [ ! -f "$RUNNER_SCRIPT" ]; then
-        echo_error "Required files ('$APP_PY_FILE', '$RUNNER_SCRIPT') not found."
+    if [ ! -f "$APP_PY_FILE" ]; then
+        echo_error "Required file ('$APP_PY_FILE') not found."
     fi
 
     # 2. Create installation directory
@@ -62,9 +91,8 @@ main() {
     mkdir -p "$INSTALL_DIR"
 
     # 3. Copy application files
-    echo_info "Copying application files..."
+    echo_info "Copying application file..."
     cp "$APP_PY_FILE" "$INSTALL_DIR/"
-    cp "$RUNNER_SCRIPT" "$INSTALL_DIR/"
 
     # 4. Handle the icon
     local icon_path
@@ -78,20 +106,16 @@ main() {
         icon_path="${INSTALL_DIR}/${ICON_FILE_SVG}"
     fi
 
-    # 5. Make the runner script executable
-    chmod +x "${INSTALL_DIR}/${RUNNER_SCRIPT}"
-
-    # 6. Create virtual environment and install dependencies
+    # 5. Create virtual environment and install dependencies
     if [ -f "$REQUIREMENTS_FILE" ]; then
         echo_info "Creating Python virtual environment in '${VENV_DIR}'..."
         python3 -m venv "$VENV_DIR"
         
         echo_info "Activating virtual environment and installing packages from '$REQUIREMENTS_FILE'..."
-        # Note: We run pip in a subshell to avoid changing the current shell's state
         (
             source "${VENV_DIR}/bin/activate"
             pip install --upgrade pip
-            pip install -r "../${REQUIREMENTS_FILE}" # Use relative path from inside INSTALL_DIR
+            pip install -r "${REQUIREMENTS_FILE}"
         )
         if [ $? -ne 0 ]; then
             echo_error "Failed to install Python dependencies."
@@ -100,12 +124,11 @@ main() {
         echo_info "Skipping Python dependencies: '$REQUIREMENTS_FILE' not found."
     fi
 
-    # 7. Create and install the .desktop file
+    # 6. Create and install the .desktop file
     echo_info "Creating and installing the desktop launcher..."
     mkdir -p "$DESKTOP_INSTALL_DIR"
     
-    # The Exec command must now first activate the venv
-    local exec_path="bash -c 'source ${VENV_DIR}/bin/activate && ${INSTALL_DIR}/${RUNNER_SCRIPT}'"
+    local exec_path="bash -c 'source ${VENV_DIR}/bin/activate && python3 ${INSTALL_DIR}/${APP_PY_FILE}'"
 
     DESKTOP_FILE_CONTENT="[Desktop Entry]
 Version=1.0
@@ -120,7 +143,7 @@ StartupNotify=true
 "
     echo "$DESKTOP_FILE_CONTENT" > "${DESKTOP_INSTALL_DIR}/${DESKTOP_FILE_NAME}"
 
-    # 8. Update the desktop database
+    # 7. Update the desktop database
     echo_info "Updating the desktop application database..."
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database "$DESKTOP_INSTALL_DIR"
@@ -130,6 +153,7 @@ StartupNotify=true
 
     echo_success "Installation completed successfully!"
     echo_info "You can now find 'Video Editor GUI' in your application menu."
+    echo_info "To uninstall, run: rm -rf ${INSTALL_DIR} ${DESKTOP_INSTALL_DIR}/${DESKTOP_FILE_NAME}"
 }
 
 # Run the main function
