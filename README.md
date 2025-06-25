@@ -11,3 +11,4 @@ git pull
     ./install.sh
 
 
+rm -rf ~/.local/share/VideoEditorApp ~/.local/share/applications/VideoEditorGUI.desktop
