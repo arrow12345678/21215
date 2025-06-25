@@ -265,6 +265,7 @@ def process_video_chunk(chunk_settings, status_callback=None, status_queue=None)
         
         batch_size = get_optimal_batch_size(frame_count)
         processed_count = 0
+        cpu_cores = multiprocessing.cpu_count()
         while processed_count < frame_count:
             frames = []
             for _ in range(batch_size):
@@ -272,7 +273,17 @@ def process_video_chunk(chunk_settings, status_callback=None, status_queue=None)
                 if not ret: break
                 frames.append(frame)
             if not frames: break
-            processed_batch = process_frame_batch(frames, chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply)
+            # --- تعديل هنا: تفعيل التفرع على مستوى الإطارات ---
+            if chunk_settings.get('frame_parallel', False):
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=cpu_cores) as executor:
+                    # كل إطار يعالج منفردًا
+                    processed_batch = list(executor.map(
+                        lambda f: process_frame_batch([f], chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply)[0],
+                        frames
+                    ))
+            else:
+                processed_batch = process_frame_batch(frames, chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply)
             for p_frame in processed_batch: out.write(p_frame)
             processed_count += len(frames)
             send_status(f"الجزء {chunk_index + 1}: تمت معالجة {processed_count}/{frame_count} إطار", progress=(processed_count / frame_count) * 100)
