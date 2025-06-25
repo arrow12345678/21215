@@ -73,6 +73,7 @@ import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import time
 from functools import partial
+import pickle
 
 try:
     import matplotlib
@@ -275,17 +276,17 @@ def process_video_chunk(chunk_settings, status_callback=None, status_queue=None)
                 if not ret: break
                 frames.append(frame)
             if not frames: break
-            # --- تعديل: استخدم ProcessPoolExecutor بدلاً من ThreadPoolExecutor ---
             if chunk_settings.get('frame_parallel', False):
-                from concurrent.futures import ProcessPoolExecutor
-                import pickle
-                def process_one_frame_pickled(frame_bytes):
-                    frame = pickle.loads(frame_bytes)
-                    return process_frame_batch([frame], chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply)[0]
+                frames_bytes = [pickle.dumps(f) for f in frames]
+                func = partial(process_one_frame_pickled,
+                               chunk_settings=chunk_settings,
+                               new_width=new_width,
+                               new_height=new_height,
+                               original_width=original_width,
+                               original_height=original_height,
+                               overlays_to_apply=overlays_to_apply)
                 with ProcessPoolExecutor(max_workers=cpu_cores) as executor:
-                    # يجب تمرير البيانات بشكل قابل للنقل بين العمليات (pickle)
-                    frames_bytes = [pickle.dumps(f) for f in frames]
-                    processed_batch = list(executor.map(process_one_frame_pickled, frames_bytes))
+                    processed_batch = list(executor.map(func, frames_bytes))
             else:
                 processed_batch = process_frame_batch(frames, chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply)
             for p_frame in processed_batch: out.write(p_frame)
@@ -325,6 +326,10 @@ def process_video_chunk(chunk_settings, status_callback=None, status_queue=None)
     finally:
         for f in [temp_audio_file_for_chunk, temp_video_file_for_chunk]:
             if f and os.path.exists(f): os.remove(f)
+
+def process_one_frame_pickled(frame_bytes, chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply):
+    frame = pickle.loads(frame_bytes)
+    return process_frame_batch([frame], chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply)[0]
 
 def process_video_core(settings, status_callback):
     original_input_path = settings['input_path']
