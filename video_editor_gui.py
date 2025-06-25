@@ -448,9 +448,6 @@ def process_video_core(settings, status_callback):
                 manager.shutdown()
             else:
                 for i, chunk_file_path in enumerate(chunk_input_files):
-                    if str(i) in completed_chunks:
-                        status_callback(f"[تخطي] الجزء {i+1} مكتمل مسبقًا.")
-                        continue
                     chunk_specific_output_path = os.path.join(output_dir, f"{base_output_name}_part_{i+1}{output_ext}")
                     chunk_settings = settings.copy()
                     chunk_settings['input_path'] = chunk_file_path
