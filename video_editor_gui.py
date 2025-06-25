@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 import os
 import sys
 import shutil
@@ -6,7 +7,7 @@ import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-# --- FFmpeg & System Configuration (Early Setup) ---
+
 import imageio_ffmpeg
 from pydub import AudioSegment
 
@@ -16,8 +17,7 @@ except NameError:
     base_path = os.path.abspath(".")
 
 def find_executable(name):
-    """Finds an executable using imageio-ffmpeg, system PATH, or local folders."""
-    # 1. Try imageio-ffmpeg first
+    
     try:
         if name == 'ffmpeg':
             return imageio_ffmpeg.get_ffmpeg_exe()
@@ -29,14 +29,14 @@ def find_executable(name):
             if os.path.exists(ffprobe_path):
                 return ffprobe_path
     except Exception:
-        pass  # Fallback if imageio-ffmpeg fails
+        pass  
 
-    # 2. Try shutil.which (searches system PATH)
+    
     executable = shutil.which(name)
     if executable:
         return os.path.normpath(executable)
 
-    # 3. Check common local project folders if not found in PATH
+    
     exe_name_with_ext = f"{name}.exe" if sys.platform == 'win32' else name
     
     local_paths_to_check = [
@@ -61,7 +61,7 @@ if ffmpeg_exe_path:
 if ffprobe_exe_path:
     AudioSegment.ffprobe = ffprobe_exe_path
 
-# --- End of Early Setup ---
+
 
 import cv2
 import numpy as np
@@ -149,36 +149,36 @@ def process_frame_batch(frame_batch, settings, new_width, new_height, original_w
                     
                     elif o_type == 'blur':
                         roi = final_frame[y:y+h, x:x+w]
-                        # Kernel size must be odd
+                        
                         ksize = (max(1, w // 4) | 1, max(1, h // 4) | 1)
                         final_frame[y:y+h, x:x+w] = cv2.GaussianBlur(roi, ksize, 0)
                     
                     elif o_type == 'pixelate':
-                        # حجم البكسل (كلما زاد الرقم زاد التشويش)
+                        
                         pixel_size = 20
-                        # استخراج منطقة الاهتمام (ROI)
+                        
                         x, y, w, h = overlay['x'], overlay['y'], overlay['w'], overlay['h']
                         roi = final_frame[y:y+h, x:x+w]
                         if roi.size == 0: continue
                         
-                        # إنشاء قناع دائري
+                        
                         mask = np.zeros(roi.shape[:2], dtype=np.uint8)
                         cv2.circle(mask, (w//2, h//2), w//2, 255, -1)
 
-                        # تصغير الصورة لإنشاء تأثير البكسلة
+                        
                         small_roi = cv2.resize(roi, (max(1, w // pixel_size), max(1, h // pixel_size)), interpolation=cv2.INTER_LINEAR)
                         pixelated_roi = cv2.resize(small_roi, (w, h), interpolation=cv2.INTER_NEAREST)
 
-                        # دمج المنطقة المبكسلة مع الأصلية باستخدام القناع
+                        
                         final_frame[y:y+h, x:x+w] = np.where(mask[..., None].astype(bool), pixelated_roi, roi)
 
                     elif o_type in ['rect', 'circle']:
                         color_hex = overlay.get('color', '#FFFF00').lstrip('#')
-                        color_bgr = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0)) # BGR for OpenCV
+                        color_bgr = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0)) 
                         thickness = overlay.get('thickness', 2)
                         if o_type == 'rect':
                             cv2.rectangle(final_frame, (x, y), (x+w, y+h), color_bgr, thickness)
-                        else: # circle
+                        else: 
                             cv2.ellipse(final_frame, (x + w//2, y + h//2), (w//2, h//2), 0, 0, 360, color_bgr, thickness)
 
                 except Exception as e:
@@ -211,57 +211,53 @@ def optimize_memory_usage():
     
 def get_optimal_batch_size(frame_count, available_memory_gb=64):
     cpu_count = multiprocessing.cpu_count()
-    # تقدير أكثر واقعية لحجم الإطار الواحد (1080p BGR) بالـ MB
-    # هذا يسمح باستغلال أفضل للذاكرة الكبيرة
+    
+    
     estimated_frame_memory_mb = 25 
     available_memory_mb = available_memory_gb * 1024
     
-    # استخدم 50% من الذاكرة المتاحة لمعالجة الإطارات، لترك مساحة كافية للنظام
+    
     max_frames_in_memory = int(available_memory_mb * 0.5 / estimated_frame_memory_mb)
     
-    # زد من حجم الدفعة الأساسي لكل نواة بشكل كبير
-    # هذا يقلل من عدد مرات استدعاء مجمع العمليات (Pool)
+    
+    
     optimal_batch_size = min(max_frames_in_memory, max(cpu_count * 16, 256), frame_count)
     
-    print(f"DEBUG: Optimal batch size calculated: {optimal_batch_size}") # للتحقق من الحجم المحسوب
+    print(f"DEBUG: Optimal batch size calculated: {optimal_batch_size}") 
     return max(1, optimal_batch_size)
 
 def process_frame_in_shared_memory(args):
-    """
-    Worker function: يتصل بالذاكرة المشتركة، ويعالج إطارًا واحدًا،
-    ويكتب النتيجة مرة أخرى في نفس المكان.
-    """
-    # 1. فك الوسائط
+    
     shm_name, frame_idx, shape, dtype, settings, new_width, new_height, original_width, original_height, overlays_to_apply = args
 
     try:
-        # 2. الاتصال بقطعة الذاكرة المشتركة الموجودة
+        
         existing_shm = shared_memory.SharedMemory(name=shm_name)
         
-        # 3. إنشاء مصفوفة NumPy "تطل" على الذاكرة المشتركة بأكملها (بدون نسخ)
+        
         shm_np_array = np.ndarray(shape, dtype=dtype, buffer=existing_shm.buf)
 
-        # 4. الحصول على الإطار المحدد الذي ستعالجه هذه العملية (أيضًا بدون نسخ)
-        # نقوم بنسخ الإطار هنا لنحميه من التعديل المتزامن إذا كانت process_frame_batch معقدة
+        
+        
         frame_to_process = shm_np_array[frame_idx].copy()
         
-        # 5. استدعاء منطق المعالجة الأصلي
+        
         processed_frame_list = process_frame_batch(
             [frame_to_process], settings, new_width, new_height, original_width, original_height, overlays_to_apply
         )
         
-        # 6. كتابة الإطار المُعالج مرة أخرى في نفس مكانه في الذاكرة المشتركة
+        
         if processed_frame_list:
             shm_np_array[frame_idx] = processed_frame_list[0]
 
     except Exception as e:
         print(f"Error in worker process for frame {frame_idx}: {e}")
     finally:
-        # 7. إغلاق الاتصال بالذاكرة المشتركة من هذه العملية
+        
         if 'existing_shm' in locals():
             existing_shm.close()
             
-    return frame_idx # إرجاع مؤشر للتأكيد على الانتهاء
+    return frame_idx 
 
 def process_video_chunk(chunk_settings, cancel_event, status_callback=None, status_queue=None):
     def send_status(msg, progress=None):
@@ -314,12 +310,12 @@ def process_video_chunk(chunk_settings, cancel_event, status_callback=None, stat
         batch_size = get_optimal_batch_size(frame_count)
         processed_count = 0
         cpu_cores = multiprocessing.cpu_count()
-        # --- بداية الحلقة التي تحتاج إلى فحص الإلغاء ---
+        
         while processed_count < frame_count:
-            # --- تعديل: إضافة فحص الإلغاء هنا ---
+            
             if cancel_event.is_set():
                 send_status(f"الجزء {chunk_index + 1}: تم طلب الإلغاء، إيقاف معالجة الإطارات.")
-                break # الخروج من حلقة معالجة الإطارات
+                break 
             frames = []
             for _ in range(batch_size):
                 ret, frame = cap.read()
@@ -345,11 +341,11 @@ def process_video_chunk(chunk_settings, cancel_event, status_callback=None, stat
         cap.release()
         out.release()
         if cancel_event.is_set():
-            return None # لا تكمل إلى مرحلة الدمج إذا تم الإلغاء
+            return None 
         
         send_status(f"الجزء {chunk_index + 1}: دمج الصوت والفيديو...")
         
-        # --- بداية تعديل أمر FFmpeg المبسط ---
+        
         command = [
             ffmpeg_exe_path, '-i', os.path.normpath(temp_video_file_for_chunk), '-i', os.path.normpath(temp_audio_file_for_chunk),
             '-c:a', 'aac', '-b:a', '192k',
@@ -373,7 +369,7 @@ def process_video_chunk(chunk_settings, cancel_event, status_callback=None, stat
             command.extend(['-map', '[v]', '-map', '[a]'])
 
         command.append(os.path.normpath(output_path))
-        # --- نهاية التعديل ---
+        
 
         process = subprocess.run(command, capture_output=True, text=True, creationflags=SUBPROCESS_CREATION_FLAGS)
         if process.returncode != 0:
@@ -393,22 +389,17 @@ def process_one_frame_pickled(frame_bytes, chunk_settings, new_width, new_height
     return process_frame_batch([frame], chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply)[0]
 
 def process_one_frame(frame, settings, new_width, new_height, original_width, original_height, other_overlays=None):
-    """
-    يحتوي على نفس منطق process_frame_batch ولكن لإطار واحد فقط.
-    وهذا يجعله مناسبًا للاستخدام مع executor.map في ProcessPoolExecutor.
-    """
-    # نستدعي الدالة الأصلية مع قائمة تحتوي على إطار واحد فقط ونأخذ أول نتيجة
+    
     processed_frames = process_frame_batch([frame], settings, new_width, new_height, original_width, original_height, other_overlays)
     return processed_frames[0] if processed_frames else None
 
 def run_ffmpeg_split(command):
-    """دالة صغيرة لتشغيل أمر ffmpeg للتقسيم وإرجاع الحالة."""
     try:
-        # استخدم capture_output=True لإخفاء المخرجات الكثيرة من ffmpeg
+        
         result = subprocess.run(command, check=True, capture_output=True, text=True, creationflags=SUBPROCESS_CREATION_FLAGS)
-        return (True, "") # نجاح
+        return (True, "") 
     except subprocess.CalledProcessError as e:
-        return (False, e.stderr) # فشل مع رسالة الخطأ
+        return (False, e.stderr) 
 
 def process_video_core(settings, status_callback, cancel_event):
     original_input_path = settings['input_path']
@@ -417,7 +408,7 @@ def process_video_core(settings, status_callback, cancel_event):
     created_temp_files = []
     start_time = time.time()
     shm = None
-    final_output_path = None # To hold the path of the successfully created file
+    final_output_path = None 
 
     try:
         status_callback("إنشاء نسخة مؤقتة آمنة من ملف الإدخال...")
@@ -644,7 +635,7 @@ class App(tk.Tk):
         self.cancel_event = threading.Event()
 
         self.settings = {}
-        # --- تعديل: تبسيط القيم الافتراضية ---
+        
         self.default_values = {
             "crop_top": 10, "crop_bottom": 10, "crop_left": 10, "crop_right": 10,
             "brightness": 1.1, "contrast": 1.2, "speed_factor": 1.01,
@@ -656,12 +647,12 @@ class App(tk.Tk):
             "merge_chunks_after_processing": True, "crossfade_duration": 1, 
             "parallel_level": "\u062a\u0641\u0631\u0639 \u0639\u0644\u0649 \u0645\u0633\u062a\u0648\u0649 \u0627\u0644\u0625\u0637\u0627\u0631\u0627\u062a \u062f\u0627\u062e\u0644 \u0627\u0644\u062c\u0632\u0621 (Frames in Chunk)",
             "compression_enabled": False,
-            "quality_preset": "1080p (Full HD)" # الإعداد الجديد والمبسط
+            "quality_preset": "1080p (Full HD)" 
         }
         self.settings_file = os.path.join(base_path, "settings.json")
         self.processed_chunk_files = [] 
         
-        # --- تعديل: تبسيط متغيرات Tkinter ---
+        
         self.mirror_enabled_var = tk.BooleanVar(value=self.default_values['mirror_enabled'])
         self.processing_mode_var = tk.StringVar(value=self.default_values["processing_mode"])
         self.parallel_level_var = tk.StringVar(value=self.default_values["parallel_level"])
@@ -670,7 +661,7 @@ class App(tk.Tk):
         self.chunk_size_seconds_var = tk.StringVar(value=str(self.default_values["chunk_size_seconds"]))
         self.merge_chunks_var = tk.BooleanVar(value=self.default_values["merge_chunks_after_processing"])
         self.crossfade_duration_var = tk.StringVar(value=str(self.default_values["crossfade_duration"]))
-        self.quality_preset_var = tk.StringVar(value=self.default_values["quality_preset"]) # المتغير الجديد
+        self.quality_preset_var = tk.StringVar(value=self.default_values["quality_preset"]) 
         
         self.setup_styles()
         self.create_widgets()
@@ -701,7 +692,7 @@ class App(tk.Tk):
         paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # --- اللوحة اليسرى (تحتوي على كل الإعدادات) ---
+        
         left_panel_container = ttk.Frame(paned_window, style="TFrame")
         paned_window.add(left_panel_container, weight=2)
 
@@ -719,9 +710,9 @@ class App(tk.Tk):
         left_panel.bind("<Configure>", _on_left_panel_configure)
         left_canvas.bind("<Configure>", _on_left_canvas_configure)
         left_canvas.bind("<MouseWheel>", _on_mousewheel)
-        # --- نهاية التعديل ---
+        
 
-        # --- إطار اختيار الملفات ---
+        
         file_frame = ttk.LabelFrame(left_panel, text="1. اختيار الملفات", padding=10)
         file_frame.pack(fill=tk.X, padx=5, pady=(5, 10))
         self.input_path_var = tk.StringVar(value="لم يتم اختيار ملف")
@@ -732,7 +723,7 @@ class App(tk.Tk):
         ttk.Label(file_frame, textvariable=self.output_path_var, anchor="w").grid(row=1, column=1, sticky="ew", padx=5)
         file_frame.columnconfigure(1, weight=1)
 
-        # --- أزرار الأدوات الإضافية ---
+        
         tools_frame = ttk.Frame(left_panel, style="TFrame")
         tools_frame.pack(fill=tk.X, padx=5, pady=5)
         self.waveform_button = ttk.Button(tools_frame, text="محرر الموجة الصوتية", command=self.open_waveform_editor)
@@ -740,7 +731,7 @@ class App(tk.Tk):
         self.preview_logo_button = ttk.Button(tools_frame, text="محرر العناصر (Overlays)", command=self.open_overlay_editor_window)
         self.preview_logo_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
 
-        # --- أزرار تبديل عرض الإعدادات ---
+        
         view_buttons_frame = ttk.Frame(left_panel, style="TFrame")
         view_buttons_frame.pack(fill=tk.X, padx=5, pady=(10, 0))
         self.proc_opts_button = ttk.Button(view_buttons_frame, text="خيارات المعالجة", command=lambda: self.show_view('proc'), style="ViewToggle.TButton")
@@ -750,13 +741,13 @@ class App(tk.Tk):
         self.comp_opts_button = ttk.Button(view_buttons_frame, text="ضغط الفيديو", command=lambda: self.show_view('comp'), style="ViewToggle.TButton")
         self.comp_opts_button.pack(side=tk.LEFT, padx=(2, 0), fill=tk.X, expand=True)
 
-        # --- الحاوية التي تعرض الإطارات المختلفة ---
+        
         self.options_views_container = ttk.Frame(left_panel)
         self.options_views_container.pack(fill=tk.BOTH, expand=True)
 
-        # --- بداية بناء محتويات كل قسم ---
+        
 
-        # -- 1. إطار خيارات المعالجة --
+        
         self.processing_options_view = ttk.Frame(self.options_views_container, style="TFrame")
         proc_main_frame = ttk.LabelFrame(self.processing_options_view, text="خيارات المعالجة الأساسية", padding=10)
         proc_main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -769,7 +760,7 @@ class App(tk.Tk):
             ("مدة موجة الصوت:", "wave_chunk_duration"), ("مدة تلاشي الموجة:", "wave_fade"),
             ("سمك خط X:", "x_thickness"), ("قوة إضاءة X:", "x_lighten")
         ]
-        # إنشاء حقول الإدخال
+        
         for i, (text, name) in enumerate(options):
             ttk.Label(proc_main_frame, text=text).grid(row=i, column=0, sticky="w", padx=5, pady=2)
             var = tk.StringVar(value=str(self.default_values.get(name, '')))
@@ -777,24 +768,24 @@ class App(tk.Tk):
             entry.grid(row=i, column=1, sticky="ew", padx=5, pady=2)
             self.entries[name] = var
         
-        # إضافة خيار عكس الفيديو
+        
         mirror_check = ttk.Checkbutton(proc_main_frame, text="عكس الفيديو (Mirror)", variable=self.mirror_enabled_var)
         mirror_check.grid(row=len(options), column=0, columnspan=2, sticky='w', padx=5, pady=5)
         
-        # --- إضافة عناصر التحكم المفقودة لنوع المعالجة ---
+        
         proc_mode_label = ttk.Label(proc_main_frame, text="نوع المعالجة:")
         proc_mode_label.grid(row=len(options) + 1, column=0, sticky='w', padx=5, pady=5)
         proc_mode_frame = ttk.Frame(proc_main_frame, style="TFrame")
         proc_mode_frame.grid(row=len(options) + 1, column=1, sticky='ew')
         
-        # أضفنا 'command=self.toggle_chunking_widgets_state' لكلا الزرين
+        
         ttk.Radiobutton(proc_mode_frame, text="تفرعي", variable=self.processing_mode_var, value="parallel", command=self.toggle_chunking_widgets_state).pack(side=tk.LEFT, expand=True)
         ttk.Radiobutton(proc_mode_frame, text="تسلسلي", variable=self.processing_mode_var, value="sequential", command=self.toggle_chunking_widgets_state).pack(side=tk.LEFT, expand=True)
-        # --- نهاية الإضافة ---
+        
 
         proc_main_frame.columnconfigure(1, weight=1)
 
-        # -- 2. إطار خيارات التقسيم --
+        
         self.chunking_options_view = ttk.Frame(self.options_views_container, style="TFrame")
         chunk_main_frame = ttk.LabelFrame(self.chunking_options_view, text="إعدادات تقسيم الفيديو", padding=10)
         chunk_main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -802,7 +793,7 @@ class App(tk.Tk):
         chunk_check.grid(row=0, column=0, columnspan=2, sticky='w', padx=5, pady=5)
         
         ttk.Label(chunk_main_frame, text="حجم الجزء (بالدقائق):").grid(row=1, column=0, sticky='w', padx=5, pady=5)
-        self.chunk_size_entry = ttk.Entry(chunk_main_frame, textvariable=self.chunk_size_seconds_var) # تعريف العنصر
+        self.chunk_size_entry = ttk.Entry(chunk_main_frame, textvariable=self.chunk_size_seconds_var) 
         self.chunk_size_entry.grid(row=1, column=1, sticky='ew', padx=5)
         
         self.merge_chunks_check = ttk.Checkbutton(chunk_main_frame, text="دمج الأجزاء بعد المعالجة", variable=self.merge_chunks_var, command=self.toggle_crossfade_widget_state)
@@ -812,22 +803,22 @@ class App(tk.Tk):
         self.crossfade_entry = ttk.Entry(chunk_main_frame, textvariable=self.crossfade_duration_var)
         self.crossfade_entry.grid(row=3, column=1, sticky='ew', padx=5)
 
-        # --- إضافة عناصر التحكم المفقودة لمستوى التفرع ---
+        
         ttk.Label(chunk_main_frame, text="مستوى التفرع:").grid(row=4, column=0, sticky='w', padx=5, pady=5)
         self.parallel_level_combo = ttk.Combobox(chunk_main_frame, textvariable=self.parallel_level_var, values=["تفرع على مستوى الأجزاء (Chunks)", "تفرع على مستوى الإطارات داخل الجزء (Frames in Chunk)"], state="readonly")
         self.parallel_level_combo.grid(row=4, column=1, sticky='ew', padx=5, pady=5)
-        # --- نهاية الإضافة ---
+        
         
         self.manual_merge_button = ttk.Button(chunk_main_frame, text="دمج أجزاء يدوياً...", command=self.manually_merge_chunks)
         self.manual_merge_button.grid(row=5, column=0, columnspan=2, sticky='ew', padx=5, pady=10)
         chunk_main_frame.columnconfigure(1, weight=1)
 
-        # -- 3. إطار خيارات الضغط --
+        
         self.compression_options_view = ttk.Frame(self.options_views_container, style="TFrame")
         comp_main_frame = ttk.LabelFrame(self.compression_options_view, text="إعدادات ضغط الفيديو", padding=10)
         comp_main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.compression_enabled_var.set(self.default_values['compression_enabled']) # Ensure it's defined
+        self.compression_enabled_var.set(self.default_values['compression_enabled']) 
         comp_check = ttk.Checkbutton(comp_main_frame, text="تفعيل ضغط الفيديو", variable=self.compression_enabled_var, command=self.toggle_simple_compression_widgets)
         comp_check.grid(row=0, column=0, columnspan=2, sticky='w', padx=5, pady=10)
         
@@ -838,15 +829,15 @@ class App(tk.Tk):
         self.quality_preset_combo.grid(row=1, column=1, sticky='ew', padx=5, pady=5)
         
         comp_main_frame.columnconfigure(1, weight=1)
-        # --- نهاية التعديل ---
+        
 
-        # --- أزرار حفظ واستعادة الإعدادات ---
+        
         settings_buttons_frame = ttk.Frame(left_panel, style="TFrame")
         settings_buttons_frame.pack(fill=tk.X, padx=5, pady=(10, 5), side=tk.BOTTOM)
         ttk.Button(settings_buttons_frame, text="حفظ الإعدادات", command=self.save_settings).pack(side=tk.LEFT, padx=(0, 2), expand=True, fill=tk.X)
         ttk.Button(settings_buttons_frame, text="استعادة الافتراضيات", command=self.restore_default_settings).pack(side=tk.LEFT, padx=(2, 0), expand=True, fill=tk.X)
 
-        # --- اللوحة اليمنى (للحالة والتحكم بالعملية) ---
+        
         right_panel = ttk.Frame(paned_window, padding=10, style="TFrame")
         paned_window.add(right_panel, weight=3) 
 
@@ -966,22 +957,22 @@ class App(tk.Tk):
             messagebox.showerror("خطأ في الإدخال", f"الرجاء إدخال أرقام صالحة في الخيارات.\nالخيار الذي به مشكلة على الأغلب: {name}")
             return
 
-        # حفظ الإعدادات العامة
+        
         self.settings['mirror_enabled'] = self.mirror_enabled_var.get()
         self.settings['processing_mode'] = self.processing_mode_var.get()
         
-        # حفظ إعدادات التقسيم
+        
         self.settings['enable_chunking'] = self.enable_chunking_var.get()
         self.settings['chunk_size_seconds'] = float(self.chunk_size_seconds_var.get())
         self.settings['merge_chunks_after_processing'] = self.merge_chunks_var.get()
         self.settings['crossfade_duration'] = float(self.crossfade_duration_var.get())
         self.settings['parallel_level'] = self.parallel_level_var.get()
 
-        # حفظ الإعدادات المبسطة
+        
         self.settings['compression_enabled'] = self.compression_enabled_var.get()
         self.settings['quality_preset'] = self.quality_preset_var.get()
         
-        # إدارة حالة الواجهة وبدء المعالجة
+        
         self.cancel_event.clear()
         self.process_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
@@ -991,7 +982,7 @@ class App(tk.Tk):
         self.status_text.delete(1.0, tk.END)
         self.update_status(f"تم اختيار وضع المعالجة: {'تفرعي' if self.settings['processing_mode'] == 'parallel' else 'تسلسلي'}")
         
-        # هذا السطر مهم إذا كنت تستخدم ميزة الكشف التلقائي عن المجلد المؤقت
+        
         if hasattr(self, 'optimal_temp_dir'):
             self.settings['temp_dir_path'] = self.optimal_temp_dir
 
@@ -1002,20 +993,19 @@ class App(tk.Tk):
     def run_processing_thread(self):
         result = (False, None, 0)
         try:
-            # This now returns a result tuple (success, output_path, elapsed_time)
+            
             result = process_video_core(self.settings, self.update_status, self.cancel_event)
         except Exception as e:
-            # This is a fallback for any unhandled exception inside the core function
+            
             self.after(0, self.update_status, f"An unhandled error occurred in the processing thread: {e}")
         finally:
-            # Schedule the final UI updates to run on the main thread
+            
             self.after(0, self.finalize_processing, result)
 
     def finalize_processing(self, result):
-        """Handles UI updates after processing is complete. Runs in the main GUI thread."""
         success, output_path, elapsed_time = result
 
-        # Restore button states and reset progress bar
+        
         self.process_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
         self.progress_bar.stop()
@@ -1038,27 +1028,27 @@ class App(tk.Tk):
             )
             messagebox.showinfo("اكتملت المعالجة", message)
         elif not self.cancel_event.is_set():
-            # Show an error only if the process failed and was not cancelled by the user
+            
             messagebox.showerror("فشل في المعالجة", "فشلت عملية المعالجة. يرجى مراجعة سجل الحالة لمعرفة التفاصيل.")
         
-        # Reset progress bar to 0 after a short delay
+        
         self.after(2000, lambda: self.progress_var.set(0))
 
     def save_settings(self):
         settings_to_save = {name: var.get() for name, var in self.entries.items()}
         
-        # حفظ الإعدادات العامة
+        
         settings_to_save['mirror_enabled'] = self.mirror_enabled_var.get()
         settings_to_save['processing_mode'] = self.processing_mode_var.get() 
         
-        # حفظ إعدادات التقسيم
+        
         settings_to_save['enable_chunking'] = self.enable_chunking_var.get()
         settings_to_save['chunk_size_seconds'] = self.chunk_size_seconds_var.get()
         settings_to_save['merge_chunks_after_processing'] = self.merge_chunks_var.get()
         settings_to_save['crossfade_duration'] = self.crossfade_duration_var.get()
         settings_to_save['parallel_level'] = self.parallel_level_var.get()
 
-        # حفظ الإعدادات المبسطة
+        
         settings_to_save['compression_enabled'] = self.compression_enabled_var.get()
         settings_to_save['quality_preset'] = self.quality_preset_var.get()
         
@@ -1079,7 +1069,7 @@ class App(tk.Tk):
                 if name in self.entries:
                     self.entries[name].set(value)
 
-            # تحميل الإعدادات العامة والتقسيم
+            
             self.mirror_enabled_var.set(loaded_settings.get('mirror_enabled', self.default_values['mirror_enabled']))
             self.processing_mode_var.set(loaded_settings.get('processing_mode', self.default_values['processing_mode'])) 
             self.enable_chunking_var.set(loaded_settings.get('enable_chunking', self.default_values['enable_chunking']))
@@ -1088,11 +1078,11 @@ class App(tk.Tk):
             self.crossfade_duration_var.set(loaded_settings.get('crossfade_duration', str(self.default_values['crossfade_duration'])))
             self.parallel_level_var.set(loaded_settings.get('parallel_level', "تفرع على مستوى الأجزاء (Chunks)"))
 
-            # تحميل الإعدادات المبسطة
+            
             self.compression_enabled_var.set(loaded_settings.get('compression_enabled', self.default_values['compression_enabled']))
             self.quality_preset_var.set(loaded_settings.get('quality_preset', self.default_values['quality_preset']))
             
-            # تحديث حالة الواجهة بناءً على الإعدادات المحملة
+            
             self.toggle_chunking_widgets_state()
             self.toggle_crossfade_widget_state()
             self.toggle_simple_compression_widgets()
@@ -1109,11 +1099,11 @@ class App(tk.Tk):
         self.mirror_enabled_var.set(self.default_values['mirror_enabled'])
         self.processing_mode_var.set(self.default_values['processing_mode']) 
         
-        # استعادة الإعدادات المبسطة
+        
         self.compression_enabled_var.set(self.default_values['compression_enabled'])
         self.quality_preset_var.set(self.default_values['quality_preset'])
         
-        # تحديث الواجهة لتعكس الإعدادات الافتراضية
+        
         self.toggle_simple_compression_widgets()
         self.update_status("تم استعادة جميع الإعدادات الافتراضية.")
 
@@ -1173,25 +1163,25 @@ class App(tk.Tk):
         editor.grab_set() 
 
     def toggle_chunking_widgets_state(self):
-        # الشرط الأول: هل التقسيم مفعل؟
+        
         is_chunking_enabled = self.enable_chunking_var.get()
         chunking_state = tk.NORMAL if is_chunking_enabled else tk.DISABLED
         
-        # تفعيل/تعطيل الخيارات الأساسية للتقسيم
+        
         self.chunk_size_entry.config(state=chunking_state)
         self.merge_chunks_check.config(state=chunking_state)
         self.manual_merge_button.config(state=chunking_state)
 
-        # --- تعديل جوهري: منطق جديد لإظهار/إخفاء مستوى التفرع ---
-        # الشرط الثاني: هل وضع المعالجة هو "تفرعي"؟
+        
+        
         is_parallel_mode = self.processing_mode_var.get() == 'parallel'
         
-        # لا يظهر الخيار إلا إذا كان التقسيم والمعالجة التفرعية مفعلين معًا
+        
         parallel_level_state = tk.NORMAL if is_chunking_enabled and is_parallel_mode else tk.DISABLED
         self.parallel_level_combo.config(state=parallel_level_state)
-        # --- نهاية التعديل الجوهري ---
+        
 
-        # هذا السطر يدير حالة حقل التلاشي بشكل منفصل
+        
         self.toggle_crossfade_widget_state()
 
     def toggle_crossfade_widget_state(self):
@@ -1225,41 +1215,38 @@ class App(tk.Tk):
             self.update_status(f"تم حفظ {len(self.settings['overlays'])} عنصر/عناصر من محرر المعاينة.")
 
     def stop_processing(self):
-        """تضبط راية الإلغاء لإيقاف عملية المعالجة."""
         self.update_status("جاري طلب إيقاف المعالجة...")
         self.cancel_event.set()
         self.stop_button.config(state=tk.DISABLED)
 
     def _update_compression_controls(self, event=None):
-        """تحديث واجهة المستخدم بناءً على خيارات الضغط المحددة."""
         is_enabled = self.compression_enabled_var.get()
         state = tk.NORMAL if is_enabled else tk.DISABLED
 
-        # تفعيل/تعطيل كل العناصر
+        
         for child in self.compression_options_view.winfo_children()[0].winfo_children():
             if isinstance(child, (ttk.Combobox, ttk.Scale, ttk.Entry, ttk.Checkbutton, ttk.Label)):
-                # لا تقم بتعطيل زر التفعيل الرئيسي
+                
                 if child != self.compression_options_view.winfo_children()[0].winfo_children()[0]:
                      child.config(state=state)
 
         if not is_enabled:
             return
 
-        # تحديث عناصر التحكم بالجودة بناءً على وضع الترميز
+        
         mode = self.encoding_mode_combo.get()
         if mode == "الجودة الثابتة (CRF)":
             self.quality_label.config(text="قيمة CRF (0-51):")
             self.quality_scale.config(from_=0, to=51, variable=self.quality_preset_var)
             self.quality_entry.config(textvariable=self.quality_preset_var)
-            self.two_pass_check.config(state=tk.DISABLED) # Two-pass لا يستخدم مع CRF
-        else: # معدل البت المستهدف (VBR)
+            self.two_pass_check.config(state=tk.DISABLED) 
+        else: 
             self.quality_label.config(text="معدل البت (kbps):")
             self.quality_scale.config(from_=500, to=10000, variable=self.quality_preset_var)
             self.quality_entry.config(textvariable=self.quality_preset_var)
             self.two_pass_check.config(state=tk.NORMAL)
 
     def toggle_simple_compression_widgets(self):
-        """تفعيل أو تعطيل قائمة اختيار الجودة."""
         state = tk.NORMAL if self.compression_enabled_var.get() else tk.DISABLED
         self.quality_preset_combo.config(state=state)
 
@@ -1306,7 +1293,7 @@ class OverlayEditorWindow(tk.Toplevel):
         resample = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS', Image.BICUBIC)
         self.tk_img = ImageTk.PhotoImage(pil_img.resize((self.disp_w, self.disp_h), resample))
 
-        # --- SCROLLABLE MAIN CONTAINER ---
+        
         main_canvas = tk.Canvas(self, bg=App.BG_COLOR, highlightthickness=0)
         vscroll = ttk.Scrollbar(self, orient="vertical", command=main_canvas.yview)
         main_canvas.configure(yscrollcommand=vscroll.set)
@@ -1324,7 +1311,7 @@ class OverlayEditorWindow(tk.Toplevel):
             main_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
         main_canvas.bind("<MouseWheel>", _on_mousewheel)
 
-        # --- Toolbar ---
+        
         toolbar = ttk.Frame(content_frame)
         toolbar.pack(fill=tk.X, padx=10, pady=(5, 0))
         self.current_mode = tk.StringVar(value="move")
@@ -1334,23 +1321,23 @@ class OverlayEditorWindow(tk.Toplevel):
         style.map("Tool.TRadiobutton", background=[('active', App.BUTTON_ACTIVE_COLOR), ('selected', App.BUTTON_COLOR)])
         for text, mode in modes:
             ttk.Radiobutton(toolbar, text=text, variable=self.current_mode, value=mode, style="Tool.TRadiobutton").pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
-        # --- Brush Size Slider ---
+        
         brush_frame = ttk.Frame(content_frame)
         brush_frame.pack(fill=tk.X, padx=10, pady=5)
         ttk.Label(brush_frame, text="حجم الفرشاة:").pack(side=tk.LEFT, padx=(0, 5))
         ttk.Scale(brush_frame, from_=10, to=150, orient=tk.HORIZONTAL, variable=self.brush_size).pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Entry(brush_frame, textvariable=self.brush_size, width=5).pack(side=tk.LEFT, padx=5)
-        # --- Canvas ---
+        
         self.canvas = tk.Canvas(content_frame, width=self.disp_w, height=self.disp_h, bg='black', highlightthickness=0)
         self.canvas.pack(pady=10, padx=10)
         self.canvas.create_image(0, 0, anchor='nw', image=self.tk_img, tags="bg_image")
-        # --- Buttons ---
+        
         btn_frame = ttk.Frame(content_frame)
         btn_frame.pack(pady=10, fill=tk.X, padx=10)
         ttk.Button(btn_frame, text="إضافة شعار...", command=self.add_logo).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="حذف المحدد", command=self.delete_selected).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="حفظ وإغلاق", command=self.save_and_close).pack(side=tk.RIGHT, padx=5)
-        # --- Bindings ---
+        
         self.canvas.bind('<ButtonPress-1>', self.on_press)
         self.canvas.bind('<B1-Motion>', self.on_motion)
         self.canvas.bind('<ButtonRelease-1>', self.on_release)
@@ -1422,7 +1409,7 @@ class OverlayEditorWindow(tk.Toplevel):
         self.destroy()
 
     def save_and_close(self):
-        # Remove runtime-only objects before saving
+        
         for data in self._overlays.values():
             data.pop('pil_img', None)
             data.pop('tk_logo', None)
@@ -1458,7 +1445,7 @@ class OverlayEditorWindow(tk.Toplevel):
         elif mode == 'pixelate':
             self._selected_id = None
             self._drag_data = {'mode': 'draw_pixelate', 'last_point': (event.x, event.y)}
-            # أضف أول نقطة تشويش
+            
             self._add_pixelate_at(event.x, event.y)
         elif mode in ['rect', 'circle']:
             self._selected_id = None
@@ -1467,7 +1454,7 @@ class OverlayEditorWindow(tk.Toplevel):
 
     def _add_pixelate_at(self, x, y):
         radius = self.brush_size.get() // 2
-        # تأكد أن المستطيل ضمن حدود الصورة
+        
         x0 = max(0, min(self.disp_w - radius * 2, x - radius))
         y0 = max(0, min(self.disp_h - radius * 2, y - radius))
         w = h = radius * 2
@@ -1502,7 +1489,7 @@ class OverlayEditorWindow(tk.Toplevel):
     def on_release(self, event):
         mode = self._drag_data.get('mode')
         if mode == 'draw_pixelate':
-            pass  # لا شيء، التشويش تم أثناء السحب
+            pass  
         elif mode and mode.startswith('draw_'):
             self.canvas.delete("temp")
             x1, y1 = self._drag_data['x'], self._drag_data['y']
@@ -1627,7 +1614,7 @@ class WaveformEditorWindow(tk.Toplevel):
         self.status_label_var.set("جاري رسم شكل الموجة...")
         self.update() 
         
-        max_points = 50000 # More points for detail
+        max_points = 50000 
         step = max(1, len(self.samples) // max_points)
         plot_samples = self.samples[::step]
         plot_time = self.time_axis[::step]
@@ -1703,13 +1690,13 @@ class WaveformEditorWindow(tk.Toplevel):
                 try: os.remove(temp_preview_file)
                 except OSError: pass
 
-# --- إعدادات الجودة المسبقة للضغط ---
-# سيستخدم البرنامج هذه القيم تلقائيًا بناءً على اختيار المستخدم
+
+
 QUALITY_PRESETS = {
     "أعلى جودة ممكنة (ملف كبير)": {
-        "crf": "17",        # قيمة CRF منخفضة جداً لجودة شبه أصلية
-        "preset": "slow",   # ضغط بطيء ودقيق جداً
-        "resolution": None  # لا يغير الدقة الأصلية
+        "crf": "17",        
+        "preset": "slow",   
+        "resolution": None  
     },
     "1080p (Full HD)": {
         "crf": "22",
