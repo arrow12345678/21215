@@ -1,0 +1,11 @@
+opencv-python
+numpy
+pydub
+matplotlib
+Pillow
+tkinterdnd2-universal
+moviepy
+imageio
+imageio-ffmpeg
+tqdm
+python-dotenv 
