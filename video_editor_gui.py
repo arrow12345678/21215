@@ -207,12 +207,14 @@ def optimize_memory_usage():
     import gc
     gc.collect()  
     
-def get_optimal_batch_size(frame_count, available_memory_gb=4):
+def get_optimal_batch_size(frame_count, available_memory_gb=64):
     cpu_count = multiprocessing.cpu_count()
-    estimated_frame_memory_mb = 5  
+    estimated_frame_memory_mb = 5  # تقدير حجم إطار واحد في الذاكرة
     available_memory_mb = available_memory_gb * 1024
-    max_frames_in_memory = int(available_memory_mb * 0.6 / estimated_frame_memory_mb)  
-    optimal_batch_size = min(max_frames_in_memory, max(cpu_count * 2, 8), frame_count // 10 if frame_count > 10 else 1)
+    # استخدم 80% من الذاكرة المتاحة
+    max_frames_in_memory = int(available_memory_mb * 0.8 / estimated_frame_memory_mb)
+    # لا تتجاوز عدد الإطارات الكلي
+    optimal_batch_size = min(max_frames_in_memory, max(cpu_count * 4, 32), frame_count)
     return max(1, optimal_batch_size)
 
 def process_video_chunk(chunk_settings, status_callback=None, status_queue=None):
@@ -273,15 +275,17 @@ def process_video_chunk(chunk_settings, status_callback=None, status_queue=None)
                 if not ret: break
                 frames.append(frame)
             if not frames: break
-            # --- تعديل هنا: تفعيل التفرع على مستوى الإطارات ---
+            # --- تعديل: استخدم ProcessPoolExecutor بدلاً من ThreadPoolExecutor ---
             if chunk_settings.get('frame_parallel', False):
-                from concurrent.futures import ThreadPoolExecutor
-                with ThreadPoolExecutor(max_workers=cpu_cores) as executor:
-                    # كل إطار يعالج منفردًا
-                    processed_batch = list(executor.map(
-                        lambda f: process_frame_batch([f], chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply)[0],
-                        frames
-                    ))
+                from concurrent.futures import ProcessPoolExecutor
+                import pickle
+                def process_one_frame_pickled(frame_bytes):
+                    frame = pickle.loads(frame_bytes)
+                    return process_frame_batch([frame], chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply)[0]
+                with ProcessPoolExecutor(max_workers=cpu_cores) as executor:
+                    # يجب تمرير البيانات بشكل قابل للنقل بين العمليات (pickle)
+                    frames_bytes = [pickle.dumps(f) for f in frames]
+                    processed_batch = list(executor.map(process_one_frame_pickled, frames_bytes))
             else:
                 processed_batch = process_frame_batch(frames, chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply)
             for p_frame in processed_batch: out.write(p_frame)
