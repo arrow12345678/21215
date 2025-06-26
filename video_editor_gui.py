@@ -639,7 +639,7 @@ class App(tk.Tk):
         self.default_values = {
             "crop_top": 10, "crop_bottom": 10, "crop_left": 10, "crop_right": 10,
             "brightness": 1.1, "contrast": 1.2, "speed_factor": 1.01,
-            "logo_scale": 0.1, "wave_chunk_duration": 1400, "wave_fade": 200,
+            "logo_scale": 0.1, "wave_chunk_duration": 1200, "wave_fade": 200,
             "x_thickness": 50, "x_lighten": 50,
             "mirror_enabled": True,
             "processing_mode": "parallel", 
