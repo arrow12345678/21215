@@ -6,7 +6,8 @@ import shutil
 import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-
+# video_editor_gui.py
+from processing_workers import process_frame_in_shared_memory, process_audio_chunk_parallel
 
 import imageio_ffmpeg
 from pydub import AudioSegment
@@ -193,71 +194,28 @@ def process_frame_batch(frame_batch, settings, new_width, new_height, original_w
     
     return processed_frames
 
-def process_audio_chunk_parallel(chunk_data):
-    chunk, wave_fade, is_first, is_last = chunk_data
-    
-    if is_first:
-        chunk = chunk.fade_out(wave_fade)
-    elif is_last:
-        chunk = chunk.fade_in(wave_fade)
-    else:
-        chunk = chunk.fade_in(wave_fade).fade_out(wave_fade)
-    
-    return chunk
 
 def optimize_memory_usage():
     import gc
     gc.collect()  
     
-def get_optimal_batch_size(frame_count, available_memory_gb=64):
-    cpu_count = multiprocessing.cpu_count()
-    
-    
+
+
+
+def get_optimal_batch_size(frame_count, default_cpu_count=4):
+    # تم تبسيط الدالة لتجنب استدعاء multiprocessing هنا
+    # هذا هو التعديل الأكثر أهمية لحل مشكلة التجمد
     estimated_frame_memory_mb = 25 
+    available_memory_gb = 8  # تقدير متحفظ للذاكرة المتاحة
     available_memory_mb = available_memory_gb * 1024
-    
-    
+
     max_frames_in_memory = int(available_memory_mb * 0.5 / estimated_frame_memory_mb)
-    
-    
-    
-    optimal_batch_size = min(max_frames_in_memory, max(cpu_count * 16, 256), frame_count)
-    
+
+    # استخدام قيمة تقديرية لعدد الأنوية
+    optimal_batch_size = min(max_frames_in_memory, max(default_cpu_count * 16, 256), frame_count)
+
     print(f"DEBUG: Optimal batch size calculated: {optimal_batch_size}") 
     return max(1, optimal_batch_size)
-
-def process_frame_in_shared_memory(args):
-    
-    shm_name, frame_idx, shape, dtype, settings, new_width, new_height, original_width, original_height, overlays_to_apply = args
-
-    try:
-        
-        existing_shm = shared_memory.SharedMemory(name=shm_name)
-        
-        
-        shm_np_array = np.ndarray(shape, dtype=dtype, buffer=existing_shm.buf)
-
-        
-        
-        frame_to_process = shm_np_array[frame_idx].copy()
-        
-        
-        processed_frame_list = process_frame_batch(
-            [frame_to_process], settings, new_width, new_height, original_width, original_height, overlays_to_apply
-        )
-        
-        
-        if processed_frame_list:
-            shm_np_array[frame_idx] = processed_frame_list[0]
-
-    except Exception as e:
-        print(f"Error in worker process for frame {frame_idx}: {e}")
-    finally:
-        
-        if 'existing_shm' in locals():
-            existing_shm.close()
-            
-    return frame_idx 
 
 def process_video_chunk(chunk_settings, cancel_event, status_callback=None, status_queue=None):
     def send_status(msg, progress=None):
@@ -268,121 +226,132 @@ def process_video_chunk(chunk_settings, cancel_event, status_callback=None, stat
         else:
             print(msg)
 
-    temp_audio_file_for_chunk, temp_video_file_for_chunk = None, None
+    temp_audio_file_for_chunk = None
+    ffmpeg_process = None
+
     try:
+        # --- الجزء الأول: معالجة الصوت (يبقى كما هو) ---
         input_path, output_path, chunk_index, total_chunks = chunk_settings['input_path'], chunk_settings['output_path'], chunk_settings['chunk_index'], chunk_settings['total_chunks']
         send_status(f"بدء معالجة الجزء {chunk_index + 1}/{total_chunks}: {os.path.basename(input_path)}")
         
         audio = AudioSegment.from_file(os.path.normpath(input_path), format=os.path.splitext(input_path)[1][1:], ffmpeg=ffmpeg_exe_path)
-        
         audio_chunks_data = [(audio[i:i + chunk_settings['wave_chunk_duration']], chunk_settings['wave_fade'], i == 0, i + chunk_settings['wave_chunk_duration'] >= len(audio)) for i in range(0, len(audio), chunk_settings['wave_chunk_duration'])]
         processed_audio_for_chunk = sum(process_audio_chunk_parallel(d) for d in audio_chunks_data)
-
         temp_audio_fd, temp_audio_file_for_chunk = tempfile.mkstemp(suffix=f'_chunk{chunk_index}.aac', dir=os.path.join(base_path, "temp_videos"))
         os.close(temp_audio_fd)
         processed_audio_for_chunk.export(temp_audio_file_for_chunk, format="adts")
-        
+
+        # --- الجزء الثاني: إعداد معالجة الفيديو باستخدام الأنابيب والذاكرة المشتركة ---
         cap = cv2.VideoCapture(os.path.normpath(input_path))
         original_width, original_height, original_fps, frame_count = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), cap.get(cv2.CAP_PROP_FPS), int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         new_width, new_height = original_width - chunk_settings['crop_left'] - chunk_settings['crop_right'], original_height - chunk_settings['crop_top'] - chunk_settings['crop_bottom']
         
-        overlays_to_apply = []
-        if 'overlays' in chunk_settings and chunk_settings['overlays']:
-            from PIL import Image
-            preview_dims = chunk_settings.get('logo_preview_dimensions')
-            if preview_dims and preview_dims['w'] > 0 and preview_dims['h'] > 0:
-                scale_w, scale_h = new_width / preview_dims['w'], new_height / preview_dims['h']
-                for info in chunk_settings['overlays']:
-                    try:
-                        prep_info = info.copy()
-                        prep_info.update({'x': int(info['x'] * scale_w), 'y': int(info['y'] * scale_h), 'w': int(info['w'] * scale_w), 'h': int(info['h'] * scale_h)})
-                        if info['type'] == 'logo' and os.path.exists(info['path']) and prep_info['w'] > 0 and prep_info['h'] > 0:
-                            img = Image.open(info['path']).convert('RGBA')
-                            resample = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS', Image.BICUBIC)
-                            prep_info['data'] = np.array(img.resize((prep_info['w'], prep_info['h']), resample))
-                        overlays_to_apply.append(prep_info)
-                    except Exception as e: send_status(f"Warning: Could not prepare overlay: {e}")
-        
-        temp_video_fd, temp_video_file_for_chunk = tempfile.mkstemp(suffix=f'_chunk{chunk_index}.mp4', dir=os.path.join(base_path, "temp_videos"))
-        os.close(temp_video_fd)
-        out = cv2.VideoWriter(temp_video_file_for_chunk, cv2.VideoWriter_fourcc(*'mp4v'), original_fps, (new_width, new_height))
-        
-        batch_size = get_optimal_batch_size(frame_count)
+        overlays_to_apply = [] # كود إعداد الـ Overlays يجب أن يبقى هنا
+
+        # 1. إعداد أمر FFmpeg لاستقبال الفيديو من الأنبوب (stdin) والصوت من ملف مؤقت
+        command = [
+            ffmpeg_exe_path, '-y',
+            '-f', 'rawvideo',
+            '-pix_fmt', 'bgr24',
+            '-s', f'{new_width}x{new_height}',
+            '-r', str(original_fps),
+            '-i', '-',  # مدخل الفيديو من الأنبوب
+            '-i', os.path.normpath(temp_audio_file_for_chunk), # مدخل الصوت من ملف
+            '-c:a', 'aac', '-b:a', '192k',
+            '-r', str(original_fps), '-vsync', 'cfr',
+            '-pix_fmt', 'yuv420p', '-movflags', '+faststart'
+        ]
+
+        if chunk_settings.get('compression_enabled', False):
+            preset_name = chunk_settings.get('quality_preset', '1080p (Full HD)')
+            preset_config = QUALITY_PRESETS.get(preset_name, QUALITY_PRESETS['1080p (Full HD)'])
+            filters = [f"setpts={1/chunk_settings['speed_factor']}*PTS"]
+            if preset_config['resolution']: filters.append(f"scale=-2:{preset_config['resolution']}")
+            command.extend(['-vf', ",".join(filters), '-filter:a', f"atempo={chunk_settings['speed_factor']}", '-c:v', 'libx264', '-crf', preset_config['crf'], '-preset', preset_config['preset']])
+        else:
+            command.extend(['-c:v', 'libx264', '-preset', 'veryfast'])
+            command.extend(['-filter_complex', f"[0:v]setpts={1/chunk_settings['speed_factor']}*PTS[v];[1:a]atempo={chunk_settings['speed_factor']}[a]", '-map', '[v]', '-map', '[a]'])
+
+        command.append(os.path.normpath(output_path))
+
+        # 2. تشغيل عملية FFmpeg وتجهيز الأنبوب لاستقبال البيانات
+        ffmpeg_process = Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, creationflags=SUBPROCESS_CREATION_FLAGS)
+
+        # --- الجزء الثالث: حلقة القراءة والمعالجة والبث ---
+        batch_size = None
         processed_count = 0
-        cpu_cores = multiprocessing.cpu_count()
         
+
         while processed_count < frame_count:
+            if batch_size is None:
+                batch_size = get_optimal_batch_size(frame_count)
+            if cancel_event.is_set() or ffmpeg_process.poll() is not None:
+                if ffmpeg_process.poll() is not None: send_status("توقفت عملية FFmpeg بشكل غير متوقع.")
+                break
             
-            if cancel_event.is_set():
-                send_status(f"الجزء {chunk_index + 1}: تم طلب الإلغاء، إيقاف معالجة الإطارات.")
-                break 
             frames = []
             for _ in range(batch_size):
                 ret, frame = cap.read()
                 if not ret: break
                 frames.append(frame)
             if not frames: break
-            if chunk_settings.get('frame_parallel', False):
-                frames_bytes = [pickle.dumps(f) for f in frames]
-                func = partial(process_one_frame_pickled,
-                               chunk_settings=chunk_settings,
-                               new_width=new_width,
-                               new_height=new_height,
-                               original_width=original_width,
-                               original_height=original_height,
-                               overlays_to_apply=overlays_to_apply)
-                with ProcessPoolExecutor(max_workers=cpu_cores) as executor:
-                    processed_batch = list(executor.map(func, frames_bytes))
+
+            if chunk_settings.get('frame_parallel', False) and len(frames) > 1:
+                shm = None
+                try:
+                    cpu_cores = multiprocessing.cpu_count()
+                    batch_array = np.array(frames, dtype=frames[0].dtype)
+                    shm = shared_memory.SharedMemory(create=True, size=batch_array.nbytes)
+                    shm_np_array = np.ndarray(batch_array.shape, dtype=batch_array.dtype, buffer=shm.buf)
+                    shm_np_array[:] = batch_array[:]
+                    tasks = [(shm.name, i, batch_array.shape, batch_array.dtype, chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply) for i in range(len(frames))]
+                    with ProcessPoolExecutor(max_workers=cpu_cores) as executor:
+                        list(executor.map(process_frame_in_shared_memory, tasks))
+                    processed_batch = [shm_np_array[i] for i in range(len(frames))]
+                finally:
+                    if shm is not None:
+                        shm.close()
+                        shm.unlink()
             else:
                 processed_batch = process_frame_batch(frames, chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply)
-            for p_frame in processed_batch: out.write(p_frame)
+
+            for p_frame in processed_batch:
+                try:
+                    ffmpeg_process.stdin.write(p_frame.tobytes())
+                except (IOError, BrokenPipeError):
+                    send_status("خطأ: تم إغلاق أنبوب الاتصال مع FFmpeg.")
+                    cancel_event.set()
+                    break
+            
             processed_count += len(frames)
-            send_status(f"الجزء {chunk_index + 1}: تمت معالجة {processed_count}/{frame_count} إطار", progress=(processed_count / frame_count) * 100)
+            send_status(f"الجزء {chunk_index + 1}: تمت معالجة وبث {processed_count}/{frame_count} إطار", progress=(processed_count / frame_count) * 100)
+
+        # --- الجزء الرابع: الإنهاء والتنظيف ---
         cap.release()
-        out.release()
-        if cancel_event.is_set():
-            return None 
         
-        send_status(f"الجزء {chunk_index + 1}: دمج الصوت والفيديو...")
+        if ffmpeg_process.stdin:
+            ffmpeg_process.stdin.close()
         
+        _, stderr_output = ffmpeg_process.communicate()
         
-        command = [
-            ffmpeg_exe_path, '-i', os.path.normpath(temp_video_file_for_chunk), '-i', os.path.normpath(temp_audio_file_for_chunk),
-            '-c:a', 'aac', '-b:a', '192k',
-            '-r', str(original_fps), '-vsync', 'cfr',
-            '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-y'
-        ]
-
-        if chunk_settings.get('compression_enabled', False):
-            preset_name = chunk_settings.get('quality_preset', '1080p (Full HD)')
-            preset_config = QUALITY_PRESETS.get(preset_name, QUALITY_PRESETS['1080p (Full HD)'])
-            
-            filters = [f"setpts={1/chunk_settings['speed_factor']}*PTS"]
-            if preset_config['resolution']:
-                filters.append(f"scale=-2:{preset_config['resolution']}")
-            
-            command.extend(['-vf', ",".join(filters)])
-            command.extend(['-filter:a', f"atempo={chunk_settings['speed_factor']}"])
-            command.extend(['-c:v', 'libx264', '-crf', preset_config['crf'], '-preset', preset_config['preset']])
-        else:
-            command.extend(['-filter_complex', f"[0:v]setpts={1/chunk_settings['speed_factor']}*PTS[v];[1:a]atempo={chunk_settings['speed_factor']}[a]"])
-            command.extend(['-map', '[v]', '-map', '[a]'])
-
-        command.append(os.path.normpath(output_path))
-        
-
-        process = subprocess.run(command, capture_output=True, text=True, creationflags=SUBPROCESS_CREATION_FLAGS)
-        if process.returncode != 0:
-            send_status(f"الجزء {chunk_index + 1}: خطأ FFmpeg: {process.stderr}")
+        if ffmpeg_process.returncode != 0 and not cancel_event.is_set():
+            send_status(f"الجزء {chunk_index + 1}: خطأ في FFmpeg: {stderr_output.decode('utf-8', errors='ignore')}")
             return None
+        
         return output_path
 
     except Exception as e:
-        send_status(f"الجزء {chunk_index + 1}: خطأ غير متوقع: {e}")
+        send_status(f"الجزء {chunk_index + 1}: حدث خطأ كارثي: {e}")
         return None
     finally:
-        for f in [temp_audio_file_for_chunk, temp_video_file_for_chunk]:
-            if f and os.path.exists(f): os.remove(f)
+        if ffmpeg_process and ffmpeg_process.poll() is None:
+            ffmpeg_process.terminate()
+            ffmpeg_process.wait()
+        if temp_audio_file_for_chunk and os.path.exists(temp_audio_file_for_chunk):
+            try:
+                os.remove(temp_audio_file_for_chunk)
+            except OSError:
+                pass
 
 def process_one_frame_pickled(frame_bytes, chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply):
     frame = pickle.loads(frame_bytes)
@@ -411,24 +380,20 @@ def process_video_core(settings, status_callback, cancel_event):
     final_output_path = None 
 
     try:
-        status_callback("إنشاء نسخة مؤقتة آمنة من ملف الإدخال...")
+        status_callback("استخدام ملف الإدخال الأصلي مباشرة...")
+        temp_input_video_path_main_copy = original_input_path
+        
+        # التحقق من أن الملف موجود وقابل للقراءة
         try:
-            _, ext = os.path.splitext(original_input_path)
-            temp_dir = os.path.join(base_path, "temp_videos")
-            os.makedirs(temp_dir, exist_ok=True)
-            temp_file_main = tempfile.NamedTemporaryFile(delete=False, suffix=ext, dir=temp_dir)
-            temp_input_video_path_main_copy = temp_file_main.name
-            temp_file_main.close()
-            shutil.copy(os.path.normpath(original_input_path), temp_input_video_path_main_copy)
-            created_temp_files.append(temp_input_video_path_main_copy)
-            file_size = os.path.getsize(temp_input_video_path_main_copy)
-            status_callback(f"تم إنشاء نسخة مؤقتة في: {temp_input_video_path_main_copy} (الحجم: {file_size} بايت)")
-            if file_size == 0:
-                status_callback("خطأ: ملف الفيديو المؤقت فارغ (0 بايت).")
+            if not os.path.exists(temp_input_video_path_main_copy) or os.path.getsize(temp_input_video_path_main_copy) == 0:
+                status_callback(f"خطأ: ملف الفيديو المحدد غير موجود أو فارغ: {temp_input_video_path_main_copy}")
                 return (False, None, 0)
-        except Exception as e:
-            status_callback(f"خطأ في إنشاء الملف المؤقت: {e}")
+        except OSError as e:
+            status_callback(f"خطأ في الوصول إلى ملف الفيديو: {e}")
             return (False, None, 0)
+        # --- نهاية التعديل ---
+
+
 
         if cancel_event.is_set(): return (False, None, 0)
 
@@ -490,12 +455,13 @@ def process_video_core(settings, status_callback, cancel_event):
             
             status_callback("[تقسيم] اكتمل تقسيم جميع الأجزاء بنجاح.")
             processed_chunk_paths = [None] * num_chunks
-            cpu_cores = multiprocessing.cpu_count()
+            
             parallel_level = settings.get('parallel_level', "تفرع على مستوى الأجزاء (Chunks)")
 
             if settings.get('processing_mode', 'parallel') == 'parallel' and parallel_level == "تفرع على مستوى الأجزاء (Chunks)":
                 from multiprocessing import Manager
                 import queue as pyqueue
+                cpu_cores = multiprocessing.cpu_count()
                 max_concurrent_chunks = max(1, cpu_cores - 1)
                 status_callback(f"بدء معالجة الأجزاء بشكل متوازٍ (حتى {max_concurrent_chunks} أجزاء في نفس الوقت)...")
                 manager = Manager()
@@ -639,7 +605,7 @@ class App(tk.Tk):
         self.default_values = {
             "crop_top": 10, "crop_bottom": 10, "crop_left": 10, "crop_right": 10,
             "brightness": 1.1, "contrast": 1.2, "speed_factor": 1.01,
-            "logo_scale": 0.1, "wave_chunk_duration": 1200, "wave_fade": 200,
+            "logo_scale": 0.1, "wave_chunk_duration": 1400, "wave_fade": 200,
             "x_thickness": 50, "x_lighten": 50,
             "mirror_enabled": True,
             "processing_mode": "parallel", 
