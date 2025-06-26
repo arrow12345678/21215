@@ -6,8 +6,7 @@ import shutil
 import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-# video_editor_gui.py
-from processing_workers import process_frame_in_shared_memory, process_audio_chunk_parallel
+
 
 import imageio_ffmpeg
 from pydub import AudioSegment
@@ -194,29 +193,84 @@ def process_frame_batch(frame_batch, settings, new_width, new_height, original_w
     
     return processed_frames
 
+def process_audio_chunk_parallel(chunk_data):
+    chunk, wave_fade, is_first, is_last = chunk_data
+    
+    if is_first:
+        chunk = chunk.fade_out(wave_fade)
+    elif is_last:
+        chunk = chunk.fade_in(wave_fade)
+    else:
+        chunk = chunk.fade_in(wave_fade).fade_out(wave_fade)
+    
+    return chunk
 
 def optimize_memory_usage():
     import gc
     gc.collect()  
     
 
+def get_optimal_batch_size(frame_count, available_memory_gb=64):
+    # --- بداية التعديل: استدعاء cpu_count داخل الدالة ---
+    # هذا يضمن عدم تشغيله عند استيراد الملف في العمليات الفرعية
+    try:
+        cpu_count = multiprocessing.cpu_count()
+    except Exception:
+        # قيمة افتراضية في حالة حدوث خطأ
+        cpu_count = 3 
+    # --- نهاية التعديل ---
 
-
-def get_optimal_batch_size(frame_count, default_cpu_count=4):
-    # تم تبسيط الدالة لتجنب استدعاء multiprocessing هنا
-    # هذا هو التعديل الأكثر أهمية لحل مشكلة التجمد
     estimated_frame_memory_mb = 25 
-    available_memory_gb = 8  # تقدير متحفظ للذاكرة المتاحة
     available_memory_mb = available_memory_gb * 1024
-
+    
     max_frames_in_memory = int(available_memory_mb * 0.5 / estimated_frame_memory_mb)
-
-    # استخدام قيمة تقديرية لعدد الأنوية
-    optimal_batch_size = min(max_frames_in_memory, max(default_cpu_count * 16, 256), frame_count)
-
+    
+    optimal_batch_size = min(max_frames_in_memory, max(cpu_count * 16, 256), frame_count)
+    
     print(f"DEBUG: Optimal batch size calculated: {optimal_batch_size}") 
     return max(1, optimal_batch_size)
 
+def process_frame_in_shared_memory(args):
+    
+    shm_name, frame_idx, shape, dtype, settings, new_width, new_height, original_width, original_height, overlays_to_apply = args
+    existing_shm = None  # تهيئة المتغير
+
+    try:
+        # الاتصال بالذاكرة المشتركة الموجودة
+        existing_shm = shared_memory.SharedMemory(name=shm_name)
+        
+        # إنشاء مصفوفة numpy تطل على الذاكرة المشتركة
+        shm_np_array = np.ndarray(shape, dtype=dtype, buffer=existing_shm.buf)
+
+        # --- بداية التعديل: التعامل الآمن مع الإطارات ---
+        # 1. انسخ الإطار الذي تريد معالجته إلى متغير محلي. هذا يمنع مشاكل التزامن.
+        frame_to_process = shm_np_array[frame_idx].copy()
+        
+        # 2. قم بمعالجة الإطار المنسوخ
+        processed_frame_list = process_frame_batch(
+            [frame_to_process], settings, new_width, new_height, original_width, original_height, overlays_to_apply
+        )
+        
+        # 3. تأكد من أن المعالجة تمت وأن الإطار الناتج له نفس أبعاد المكان المخصص له
+        if processed_frame_list:
+            processed_frame = processed_frame_list[0]
+            # إذا كانت الأبعاد مختلفة، قم بتغيير حجم الإطار المعالج ليتناسب مع المساحة الأصلية
+            if processed_frame.shape != shm_np_array[frame_idx].shape:
+                h, w = shm_np_array[frame_idx].shape[:2]
+                processed_frame = cv2.resize(processed_frame, (w, h), interpolation=cv2.INTER_AREA)
+
+            # 4. اكتب الإطار المعالج مرة أخرى في الذاكرة المشتركة
+            shm_np_array[frame_idx] = processed_frame
+        # --- نهاية التعديل ---
+
+    except Exception as e:
+        print(f"Error in worker process for frame {frame_idx}: {e}")
+    finally:
+        # تأكد من إغلاق الاتصال بالذاكرة المشتركة
+        if existing_shm is not None:
+            existing_shm.close()
+            
+    return frame_idx
 def process_video_chunk(chunk_settings, cancel_event, status_callback=None, status_queue=None):
     def send_status(msg, progress=None):
         if status_queue:
