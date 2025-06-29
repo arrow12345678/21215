@@ -2031,8 +2031,8 @@ class PerformanceTester:
 - المنصة: {latest_result['system_info']['platform']}
 
 نتائج الاختبارات:
+"""
 
-        
         if 'frame_processing' in latest_result['tests']:
             fp = latest_result['tests']['frame_processing']
             if 'error' not in fp:
@@ -2041,8 +2041,8 @@ class PerformanceTester:
 - الإطارات المعالجة: {fp.get('frames_processed', 0)}
 - سرعة المعالجة: {fp.get('fps_processing', 0):.1f} إطار/ثانية
 - وقت المعالجة: {fp.get('sequential_time', 0):.2f} ثانية
+"""
 
-        
         if 'parallel_performance' in latest_result['tests']:
             pp = latest_result['tests']['parallel_performance']
             if 'error' not in pp:
@@ -2052,6 +2052,79 @@ class PerformanceTester:
 - الكفاءة: {pp.get('efficiency', 0):.2f}
 - الوقت التسلسلي: {pp.get('sequential_time', 0):.2f} ثانية
 - الوقت المتوازي: {pp.get('parallel_time', 0):.2f} ثانية
+"""
+
+        return report
+
+QUALITY_PRESETS = {
+    "أعلى جودة ممكنة (ملف كبير)": {
+        "crf": "15",
+        "preset": "slow",
+        "resolution": None,
+        "tune": "film",
+        "profile": "high",
+        "level": "4.1",
+        "additional_params": ["-x264opts", "ref=16:bframes=16:b-adapt=2:direct=auto:me=umh:subme=11:analyse=all:trellis=2:psy-rd=1.0,0.15"]
+    },
+    "1080p (Full HD) - متوازن": {
+        "crf": "22",
+        "preset": "medium",
+        "resolution": 1080,
+        "tune": "film",
+        "profile": "main",
+        "level": "4.0"
+    },
+    "1080p (Full HD) - جودة ممتازة": {
+        "crf": "20",
+        "preset": "slow",
+        "resolution": 1080,
+        "tune": "film",
+        "profile": "high",
+        "level": "4.0"
+    },
+    "720p (HD) - سريع": {
+        "crf": "23",
+        "preset": "fast",
+        "resolution": 720,
+        "tune": "film",
+        "profile": "main",
+        "level": "3.1"
+    },
+    "720p (HD) - جودة عالية": {
+        "crf": "21",
+        "preset": "medium",
+        "resolution": 720,
+        "tune": "film",
+        "profile": "high",
+        "level": "3.1"
+    },
+    "480p (SD) - جودة جيدة": {
+        "crf": "24",
+        "preset": "medium",
+        "resolution": 480,
+        "tune": "film",
+        "profile": "main",
+        "level": "3.0"
+    },
+    "360p - سريع": {
+        "crf": "26",
+        "preset": "fast",
+        "resolution": 360,
+        "tune": "film",
+        "profile": "baseline",
+        "level": "3.0"
+    },
+    "240p - أسرع": {
+        "crf": "28",
+        "preset": "veryfast",
+        "resolution": 240,
+        "tune": "fastdecode",
+        "profile": "baseline",
+        "level": "2.1"
+    }
+}
+
+def get_optimal_batch_size(frame_count):
     memory_manager = MemoryManager()
     return memory_manager.get_optimal_batch_size(frame_count)
 
@@ -2392,7 +2465,7 @@ def process_video_chunk(chunk_settings, cancel_event, status_callback=None, stat
                 
                 if chunk_settings.get('frame_parallel', False) and len(frames) > 1:
                     
-                    processed_batch = self._process_frames_parallel_optimized(
+                    processed_batch = _process_frames_parallel_optimized(
                         frames, chunk_settings, new_width, new_height,
                         original_width, original_height, overlays_to_apply,
                         current_workers, frame_processor
@@ -2864,8 +2937,11 @@ class App(tk.Tk):
         self.load_settings()
         self.show_view('proc')
 
-        
+
         self.after(100, lambda: apply_arabic_fixes_to_app(self))
+
+        # بدء مراقبة النظام
+        self.after(1000, self.start_system_monitoring)
 
     def on_closing(self):
         try:
@@ -2965,9 +3041,60 @@ class App(tk.Tk):
         left_panel.bind("<Configure>", _on_left_panel_configure)
         left_canvas.bind("<Configure>", _on_left_canvas_configure)
         left_canvas.bind("<MouseWheel>", _on_mousewheel)
-        
 
-        
+        # إنشاء الجانب الأيمن للحالة والتقدم
+        right_panel_container = ttk.Frame(paned_window, style="TFrame")
+        paned_window.add(right_panel_container, weight=1)
+
+        # منطقة الحالة
+        status_frame = ttk.LabelFrame(right_panel_container, text="حالة المعالجة", padding=10)
+        status_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # شريط التقدم
+        progress_frame = ttk.Frame(status_frame, style="TFrame")
+        progress_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(progress_frame, text="التقدم:").pack(anchor='w')
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var,
+                                          maximum=100, mode='determinate')
+        self.progress_bar.pack(fill=tk.X, pady=5)
+
+        # منطقة نص الحالة
+        text_frame = ttk.Frame(status_frame, style="TFrame")
+        text_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(text_frame, text="سجل المعالجة:").pack(anchor='w')
+
+        text_container = ttk.Frame(text_frame, style="TFrame")
+        text_container.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        self.status_text = tk.Text(text_container, height=15, wrap=tk.WORD,
+                                  bg=self.ENTRY_BG_COLOR, fg=self.TEXT_COLOR,
+                                  font=('Arial', 10), state=tk.DISABLED)
+        status_scrollbar = ttk.Scrollbar(text_container, orient="vertical",
+                                       command=self.status_text.yview)
+        self.status_text.configure(yscrollcommand=status_scrollbar.set)
+
+        status_scrollbar.pack(side="right", fill="y")
+        self.status_text.pack(side="left", fill="both", expand=True)
+
+        # معلومات النظام
+        system_frame = ttk.LabelFrame(right_panel_container, text="معلومات النظام", padding=10)
+        system_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
+
+        self.cpu_info_var = tk.StringVar(value="جاري تحميل معلومات النظام...")
+        self.memory_info_var = tk.StringVar(value="")
+        self.disk_info_var = tk.StringVar(value="")
+
+        ttk.Label(system_frame, textvariable=self.cpu_info_var,
+                 font=('Arial', 9), foreground='#888888').pack(anchor='w')
+        ttk.Label(system_frame, textvariable=self.memory_info_var,
+                 font=('Arial', 9), foreground='#888888').pack(anchor='w')
+        ttk.Label(system_frame, textvariable=self.disk_info_var,
+                 font=('Arial', 9), foreground='#888888').pack(anchor='w')
+
+
         file_frame = ttk.LabelFrame(left_panel, text="1. اختيار الملفات", padding=10)
         file_frame.pack(fill=tk.X, padx=5, pady=(5, 10))
         self.input_path_var = tk.StringVar(value="لم يتم اختيار ملف")
@@ -3043,13 +3170,274 @@ class App(tk.Tk):
 
         info_text = """
 🤖 النظام يقوم تلقائياً بـ:
-• تحليل حجم ومدة الفيديو
-• اختيار أفضل استراتيجية معالجة
-• تقسيم الفيديوهات الطويلة (>30 دقيقة) تلقائياً
-• تحسين استخدام الموارد حسب النظام
-• حفظ نقاط تحكم للاستئناف عند الحاجة
+- تحليل حجم ومدة الفيديو
+- اختيار أفضل استراتيجية معالجة
+- تقسيم الفيديوهات الطويلة (>30 دقيقة) تلقائياً
+- تحسين استخدام الموارد حسب النظام
+- حفظ نقاط تحكم للاستئناف عند الحاجة
+"""
+
+        info_label = ttk.Label(smart_info_frame, text=info_text, justify='right',
+                              font=('Arial', 9), foreground='#666666')
+        info_label.grid(row=0, column=0, sticky='w', padx=5, pady=5)
+
+        # إنشاء عرض خيارات الضغط
+        self.compression_options_view = ttk.Frame(self.options_views_container, style="TFrame")
+        comp_main_frame = ttk.LabelFrame(self.compression_options_view, text="خيارات ضغط الفيديو", padding=10)
+        comp_main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # تفعيل الضغط
+        ttk.Checkbutton(comp_main_frame, text="تفعيل ضغط الفيديو",
+                       variable=self.compression_enabled_var,
+                       command=self._update_compression_controls).pack(anchor='w', pady=5)
+
+        # خيارات الجودة
+        quality_frame = ttk.Frame(comp_main_frame, style="TFrame")
+        quality_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Label(quality_frame, text="جودة الفيديو:").pack(anchor='w')
+        self.quality_preset_combo = ttk.Combobox(quality_frame, textvariable=self.quality_preset_var,
+                                               values=list(QUALITY_PRESETS.keys()),
+                                               state="readonly")
+        self.quality_preset_combo.pack(fill=tk.X, pady=2)
+
+        # إنشاء عرض مراقبة الأداء
+        self.performance_options_view = ttk.Frame(self.options_views_container, style="TFrame")
+        perf_main_frame = ttk.LabelFrame(self.performance_options_view, text="مراقبة الأداء", padding=10)
+        perf_main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # أزرار الاختبار
+        test_buttons_frame = ttk.Frame(perf_main_frame, style="TFrame")
+        test_buttons_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Button(test_buttons_frame, text="تقدير وقت المعالجة",
+                  command=self.estimate_processing_time).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        ttk.Button(test_buttons_frame, text="اختبار الأداء",
+                  command=self.run_performance_test).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+
+        # سجل الأداء
+        ttk.Label(perf_main_frame, text="سجل اختبارات الأداء:").pack(anchor='w', pady=(10, 5))
+
+        perf_log_frame = ttk.Frame(perf_main_frame, style="TFrame")
+        perf_log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        self.performance_log = tk.Text(perf_log_frame, height=8, wrap=tk.WORD,
+                                     bg=self.ENTRY_BG_COLOR, fg=self.TEXT_COLOR,
+                                     font=('Arial', 9), state=tk.DISABLED)
+        perf_scrollbar = ttk.Scrollbar(perf_log_frame, orient="vertical",
+                                     command=self.performance_log.yview)
+        self.performance_log.configure(yscrollcommand=perf_scrollbar.set)
+
+        perf_scrollbar.pack(side="right", fill="y")
+        self.performance_log.pack(side="left", fill="both", expand=True)
+
+        # إضافة أزرار المعالجة
+        processing_frame = ttk.LabelFrame(left_panel, text="3. بدء المعالجة", padding=10)
+        processing_frame.pack(fill=tk.X, padx=5, pady=(10, 5))
+
+        buttons_frame = ttk.Frame(processing_frame, style="TFrame")
+        buttons_frame.pack(fill=tk.X, pady=5)
+
+        self.start_button = create_arabic_button(buttons_frame, "بدء معالجة الفيديو",
+                                                command=self.start_processing,
+                                                bg=self.BUTTON_COLOR, fg="white",
+                                                font=('Arial', 12, 'bold'),
+                                                pady=10)
+        self.start_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        self.stop_button = create_arabic_button(buttons_frame, "إيقاف المعالجة",
+                                               command=self.stop_processing,
+                                               bg="#D13438", fg="white",
+                                               font=('Arial', 12, 'bold'),
+                                               state=tk.DISABLED,
+                                               pady=10)
+        self.stop_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+
+    def select_input(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(title="اختر فيديو", filetypes=[("ملفات الفيديو", "*.mp4 *.mov *.avi"), ("كل الملفات", "*.*")])
+        if path:
+            self.input_path_var.set(os.path.basename(path))
+            self.settings['input_path'] = path
+
+    def select_output(self):
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(title="حفظ باسم", defaultextension=".mp4", filetypes=[("ملف MP4", "*.mp4")])
+        if path:
+            self.output_path_var.set(os.path.basename(path))
+            self.settings['output_path'] = path
+
+    def load_settings(self):
+        """Loads all settings from the JSON file."""
+        try:
+            if os.path.exists(self.settings_file):
+                with open(self.settings_file, 'r', encoding='utf-8') as f:
+                    loaded_settings = json.load(f)
+
+                # Load basic settings
+                for name, value in loaded_settings.items():
+                    if hasattr(self, 'entries') and name in self.entries:
+                        self.entries[name].set(value)
+
+                # Load specific settings if they exist
+                if hasattr(self, 'compression_enabled_var'):
+                    self.compression_enabled_var.set(loaded_settings.get('compression_enabled', False))
+                if hasattr(self, 'quality_preset_var'):
+                    self.quality_preset_var.set(loaded_settings.get('quality_preset', 'medium'))
+
+                print("تم تحميل الإعدادات المحفوظة.")
+        except Exception as e:
+            print(f"لم يتم العثور على إعدادات محفوظة أو حدث خطأ: {e}")
+
+    def save_settings(self):
+        """حفظ جميع الإعدادات في ملف JSON"""
+        try:
+            # جمع الإعدادات من واجهة المستخدم
+            settings_to_save = {}
+
+            # حفظ الإعدادات الأساسية من الحقول
+            if hasattr(self, 'entries'):
+                for name, var in self.entries.items():
+                    try:
+                        settings_to_save[name] = var.get()
+                    except:
+                        pass
+
+            # حفظ الإعدادات الخاصة
+            if hasattr(self, 'compression_enabled_var'):
+                settings_to_save['compression_enabled'] = self.compression_enabled_var.get()
+            if hasattr(self, 'quality_preset_var'):
+                settings_to_save['quality_preset'] = self.quality_preset_var.get()
+            if hasattr(self, 'mirror_enabled_var'):
+                settings_to_save['mirror_enabled'] = self.mirror_enabled_var.get()
+            if hasattr(self, 'processing_mode_var'):
+                settings_to_save['processing_mode'] = self.processing_mode_var.get()
+
+            # حفظ مسارات الملفات
+            if hasattr(self, 'settings'):
+                if 'input_path' in self.settings:
+                    settings_to_save['input_path'] = self.settings['input_path']
+                if 'output_path' in self.settings:
+                    settings_to_save['output_path'] = self.settings['output_path']
+                if 'overlays' in self.settings:
+                    settings_to_save['overlays'] = self.settings['overlays']
+
+            # كتابة الإعدادات إلى الملف
+            with open(self.settings_file, 'w', encoding='utf-8') as f:
+                json.dump(settings_to_save, f, ensure_ascii=False, indent=2)
+
+            print("تم حفظ الإعدادات بنجاح.")
+
+        except Exception as e:
+            print(f"خطأ في حفظ الإعدادات: {e}")
+
+    def start_processing(self):
+        if not self.settings.get('input_path') or not self.settings.get('output_path'):
+            ArabicText.messagebox_error("خطأ", "الرجاء اختيار ملف الإدخال ومكان الحفظ أولاً.")
+            return
+
+        try:
+            # تحديث الإعدادات من واجهة المستخدم
+            for name in ["brightness", "contrast", "speed_factor", "logo_scale"]:
+                if hasattr(self, 'entries') and name in self.entries:
+                    self.settings[name] = float(self.entries[name].get())
+
+            for name in ["crop_top", "crop_bottom", "crop_left", "crop_right",
+                         "wave_chunk_duration", "wave_fade", "x_thickness", "x_lighten"]:
+                if hasattr(self, 'entries') and name in self.entries:
+                    self.settings[name] = int(float(self.entries[name].get()))
+
+            # إعدادات إضافية
+            if hasattr(self, 'mirror_enabled_var'):
+                self.settings['mirror_enabled'] = self.mirror_enabled_var.get()
+            if hasattr(self, 'processing_mode_var'):
+                self.settings['processing_mode'] = self.processing_mode_var.get()
+            if hasattr(self, 'compression_enabled_var'):
+                self.settings['compression_enabled'] = self.compression_enabled_var.get()
+            if hasattr(self, 'quality_preset_var'):
+                self.settings['quality_preset'] = self.quality_preset_var.get()
+
+        except (ValueError, KeyError) as e:
+            ArabicText.messagebox_error("خطأ في الإدخال", f"الرجاء إدخال أرقام صالحة في الخيارات.\nالخطأ: {e}")
+            return
+
+        # تعطيل أزرار المعالجة
+        if hasattr(self, 'start_button'):
+            self.start_button.config(state=tk.DISABLED)
+        if hasattr(self, 'stop_button'):
+            self.stop_button.config(state=tk.NORMAL)
+
+        # إعادة تعيين حدث الإلغاء
+        self.cancel_event.clear()
+
+        # بدء المعالجة في thread منفصل
+        import threading
+        processing_thread = threading.Thread(target=self._processing_thread, daemon=True)
+        processing_thread.start()
+
+    def _processing_thread(self):
+        try:
+            self.update_status("بدء معالجة الفيديو...")
+
+            # استخدام المعالج المتقدم
+            adaptive_controller = AdaptiveProcessingController()
+            long_processor = LongVideoProcessor(adaptive_controller)
+
+            success = long_processor.process_long_video(
+                self.settings['input_path'],
+                self.settings['output_path'],
+                self.settings,
+                self.update_status,
+                self.cancel_event
+            )
+
+            if success:
+                self.update_status("تمت معالجة الفيديو بنجاح!")
+                ArabicText.messagebox_info("نجح", "تمت معالجة الفيديو بنجاح!")
+            else:
+                self.update_status("فشلت معالجة الفيديو.")
+                if not self.cancel_event.is_set():
+                    ArabicText.messagebox_error("خطأ", "فشلت معالجة الفيديو. تحقق من الرسائل للتفاصيل.")
+
+        except Exception as e:
+            self.update_status(f"خطأ في المعالجة: {e}")
+            ArabicText.messagebox_error("خطأ", f"حدث خطأ أثناء المعالجة:\n{e}")
+        finally:
+            # إعادة تفعيل الأزرار
+            if hasattr(self, 'start_button'):
+                self.start_button.config(state=tk.NORMAL)
+            if hasattr(self, 'stop_button'):
+                self.stop_button.config(state=tk.DISABLED)
+
+    def update_status(self, message, progress=None):
+        """Updates the status text and progress bar."""
+        if hasattr(self, 'status_text'):
+            self.status_text.config(state=tk.NORMAL)
+            self.status_text.insert(tk.END, message + "\n")
+            self.status_text.see(tk.END)
+            self.status_text.config(state=tk.DISABLED)
+
+            if hasattr(self, 'progress_bar') and hasattr(self, 'progress_var'):
+                if progress == "indeterminate":
+                    self.progress_bar.config(mode='indeterminate')
+                    self.progress_bar.start(10)
+                elif progress is not None:
+                    self.progress_bar.stop()
+                    self.progress_bar.config(mode='determinate')
+                    self.progress_var.set(progress)
+                    if progress >= 100:
+                        self.after(1000, lambda: self.progress_var.set(0))
+                else:
+                    self.progress_bar.stop()
+                    self.progress_bar.config(mode='determinate')
+
+            self.update_idletasks()
+        else:
+            print(message)
+
+    def start_system_monitoring(self):
         self.update_system_info()
-        
+
         self.after(5000, self.start_system_monitoring)
 
     def update_system_info(self):
@@ -3080,6 +3468,29 @@ class App(tk.Tk):
         except Exception as e:
             self.cpu_info_var.set(f"خطأ في قراءة معلومات النظام: {e}")
 
+    def show_view(self, view_name):
+        """تبديل العروض بين خيارات المعالجة والضغط ومراقبة الأداء"""
+        # إخفاء جميع العروض
+        for child in self.options_views_container.winfo_children():
+            child.pack_forget()
+
+        # إعادة تعيين ألوان الأزرار
+        for button in [self.proc_opts_button, self.comp_opts_button, self.perf_opts_button]:
+            button.configure(style="ViewToggle.TButton")
+
+        # عرض العرض المطلوب وتمييز الزر
+        if view_name == 'proc':
+            self.processing_options_view.pack(fill=tk.BOTH, expand=True)
+            self.proc_opts_button.configure(style="ViewToggleActive.TButton")
+        elif view_name == 'comp':
+            if hasattr(self, 'compression_options_view'):
+                self.compression_options_view.pack(fill=tk.BOTH, expand=True)
+            self.comp_opts_button.configure(style="ViewToggleActive.TButton")
+        elif view_name == 'perf':
+            if hasattr(self, 'performance_options_view'):
+                self.performance_options_view.pack(fill=tk.BOTH, expand=True)
+            self.perf_opts_button.configure(style="ViewToggleActive.TButton")
+
     def estimate_processing_time(self):
         if not self.settings.get('input_path'):
             messagebox.showwarning("تحذير", "يرجى اختيار ملف فيديو أولاً")
@@ -3105,26 +3516,41 @@ class App(tk.Tk):
             elif similar_cases >= 1:
                 accuracy_level = "جيد"
 
-            estimate_text = f"""
-تقدير وقت المعالجة (محسن مع التعلم):
-• الوقت المقدر: {time_estimate['estimated_hours']:.1f} ساعة ({time_estimate['estimated_minutes']:.0f} دقيقة)
-• مدة الفيديو: {factors.get('duration_minutes', 0):.1f} دقيقة
-• نسبة التعقيد: {factors.get('resolution_factor', 1):.2f}x
-• معامل الوقت الأساسي: {factors.get('base_time_per_minute', 0):.1f} دقيقة/دقيقة فيديو
-• حمولة النظام: {factors.get('system_load', 0):.1f}%
+            estimated_hours = time_estimate['estimated_hours']
+            estimated_minutes = time_estimate['estimated_minutes']
+            duration_minutes = factors.get('duration_minutes', 0)
+            resolution_factor = factors.get('resolution_factor', 1)
+            base_time_per_minute = factors.get('base_time_per_minute', 0)
+            system_load = factors.get('system_load', 0)
 
-التحسين التاريخي:
-• معامل التصحيح: {historical_factor:.2f}x
-• حالات مشابهة: {similar_cases}
-• دقة التقدير: {accuracy_level}
+            estimate_text = "تقدير وقت المعالجة (محسن مع التعلم):\n"
+            estimate_text += "- الوقت المقدر: " + str(round(estimated_hours, 1)) + " ساعة (" + str(round(estimated_minutes, 0)) + " دقيقة)\n"
+            estimate_text += "- مدة الفيديو: " + str(round(duration_minutes, 1)) + " دقيقة\n"
+            estimate_text += "- نسبة التعقيد: " + str(round(resolution_factor, 2)) + "x\n"
+            estimate_text += "- معامل الوقت الأساسي: " + str(round(base_time_per_minute, 1)) + " دقيقة/دقيقة فيديو\n"
+            estimate_text += "- حمولة النظام: " + str(round(system_load, 1)) + "%\n\n"
 
-الاستراتيجية:
-• التقسيم: {'نعم' if strategy.get('use_chunking') else 'لا'}
-• المعالجة: {'متوازية' if strategy.get('parallel_processing') else 'تسلسلية'}
-• حجم الدفعة: {strategy.get('batch_size', 0)}
-• عدد العمال: {strategy.get('max_workers', 0)}
+            estimate_text += "التحسين التاريخي:\n"
+            estimate_text += "- معامل التصحيح: " + str(round(historical_factor, 2)) + "x\n"
+            estimate_text += "- حالات مشابهة: " + str(similar_cases) + "\n"
+            estimate_text += "- دقة التقدير: " + accuracy_level + "\n\n"
 
-ملاحظة: التقدير محسن بناءً على الأداء السابق ويتضمن هامش أمان 15%
+            estimate_text += "الاستراتيجية:\n"
+            chunking_text = "نعم" if strategy.get('use_chunking') else "لا"
+            processing_text = "متوازية" if strategy.get('parallel_processing') else "تسلسلية"
+            estimate_text += "- التقسيم: " + chunking_text + "\n"
+            estimate_text += "- المعالجة: " + processing_text + "\n"
+            estimate_text += "- حجم الدفعة: " + str(strategy.get('batch_size', 0)) + "\n"
+            estimate_text += "- عدد العمال: " + str(strategy.get('max_workers', 0)) + "\n\n"
+
+            estimate_text += "ملاحظة: التقدير محسن بناءً على الأداء السابق ويتضمن هامش أمان 15%"
+
+            messagebox.showinfo("تقدير وقت المعالجة", estimate_text)
+
+        except Exception as e:
+            messagebox.showerror("خطأ", f"حدث خطأ في تقدير الوقت: {str(e)}")
+
+    def show_estimation_stats(self):
         try:
             adaptive_controller = AdaptiveProcessingController()
 
@@ -3148,22 +3574,30 @@ class App(tk.Tk):
             total_jobs = len(history)
             recent_jobs = [r for r in history if time.time() - r['timestamp'] < 30 * 24 * 3600]  
 
-            stats_text = f"""
-إحصائيات دقة تقدير الوقت:
+            optimistic_count = sum(1 for r in accuracy_ratios if r < 1.0)
+            pessimistic_count = sum(1 for r in accuracy_ratios if r > 1.0)
 
-الإحصائيات العامة:
-• إجمالي المهام: {total_jobs}
-• المهام الحديثة (30 يوم): {len(recent_jobs)}
-• متوسط نسبة الدقة: {avg_accuracy:.2f}x
-• أفضل تقدير: {min_accuracy:.2f}x (أسرع من المتوقع)
-• أسوأ تقدير: {max_accuracy:.2f}x (أبطأ من المتوقع)
+            stats_text = "إحصائيات دقة تقدير الوقت:\n\n"
+            stats_text += "الإحصائيات العامة:\n"
+            stats_text += "- إجمالي المهام: " + str(total_jobs) + "\n"
+            stats_text += "- المهام الحديثة (30 يوم): " + str(len(recent_jobs)) + "\n"
+            stats_text += "- متوسط نسبة الدقة: " + str(round(avg_accuracy, 2)) + "x\n"
+            stats_text += "- أفضل تقدير: " + str(round(min_accuracy, 2)) + "x (أسرع من المتوقع)\n"
+            stats_text += "- أسوأ تقدير: " + str(round(max_accuracy, 2)) + "x (أبطأ من المتوقع)\n\n"
 
-دقة التقديرات:
-• التقديرات الدقيقة (±50%): {accuracy_percentage:.1f}%
-• التقديرات المتفائلة (<1.0x): {sum(1 for r in accuracy_ratios if r < 1.0)}/{total_jobs}
-• التقديرات المتشائمة (>1.0x): {sum(1 for r in accuracy_ratios if r > 1.0)}/{total_jobs}
+            stats_text += "دقة التقديرات:\n"
+            stats_text += "- التقديرات الدقيقة (±50%): " + str(round(accuracy_percentage, 1)) + "%\n"
+            stats_text += "- التقديرات المتفائلة (<1.0x): " + str(optimistic_count) + "/" + str(total_jobs) + "\n"
+            stats_text += "- التقديرات المتشائمة (>1.0x): " + str(pessimistic_count) + "/" + str(total_jobs) + "\n\n"
 
-نصائح لتحسين الدقة:
+            stats_text += "نصائح لتحسين الدقة:"
+
+            messagebox.showinfo("إحصائيات التقدير", stats_text)
+
+        except Exception as e:
+            messagebox.showerror("خطأ", f"حدث خطأ في عرض الإحصائيات: {str(e)}")
+
+    def show_stats_window(self, title, content):
         stats_window = tk.Toplevel(self)
         stats_window.title(title)
         stats_window.geometry("500x400")
