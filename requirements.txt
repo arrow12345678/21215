@@ -8,4 +8,9 @@ moviepy
 imageio
 imageio-ffmpeg
 tqdm
-python-dotenv 
+python-dotenv
+psutil
+
+# مكتبات دعم اللغة العربية
+python-bidi>=0.4.2
+arabic-reshaper>=3.0.0
