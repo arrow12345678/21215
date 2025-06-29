@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 
 import os
@@ -6,7 +7,26 @@ import shutil
 import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import platform
+import locale
 
+
+try:
+    from bidi.algorithm import get_display
+    from arabic_reshaper import reshape
+    ARABIC_SUPPORT = True
+except ImportError:
+    print("تحذير: مكتبات دعم العربية غير مثبتة. سيتم تثبيتها تلقائياً...")
+    try:
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "python-bidi", "arabic-reshaper"])
+        from bidi.algorithm import get_display
+        from arabic_reshaper import reshape
+        ARABIC_SUPPORT = True
+        print("تم تثبيت مكتبات دعم العربية بنجاح!")
+    except Exception as e:
+        print(f"فشل في تثبيت مكتبات دعم العربية: {e}")
+        ARABIC_SUPPORT = False
 
 import imageio_ffmpeg
 from pydub import AudioSegment
@@ -75,6 +95,17 @@ import time
 from functools import partial
 import pickle
 from multiprocessing import shared_memory
+try:
+    import psutil
+except ImportError:
+    print("تحذير: مكتبة psutil غير متوفرة. بعض ميزات مراقبة الأداء قد لا تعمل.")
+    psutil = None
+
+import gc
+import mmap
+from collections import deque
+import queue
+import weakref
 
 try:
     import matplotlib
@@ -86,6 +117,388 @@ except ImportError:
     MATPLOTLIB_INSTALLED = False
 
 SUBPROCESS_CREATION_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+def fix_arabic_text(text):
+    if not text or not isinstance(text, str):
+        return text
+
+    if not ARABIC_SUPPORT:
+        return text
+
+    try:
+        
+        reshaped_text = reshape(text)
+        
+        bidi_text = get_display(reshaped_text)
+        return bidi_text
+    except Exception as e:
+        print(f"خطأ في معالجة النص العربي '{text}': {e}")
+        return text
+
+def get_arabic_font():
+    try:
+        system = platform.system()
+
+        if system == "Linux":
+            
+            arabic_fonts = [
+                "Noto Sans Arabic",
+                "Noto Kufi Arabic",
+                "Amiri",
+                "Cairo",
+                "Tajawal",
+                "Almarai",
+                "Scheherazade New",
+                "Lateef",
+                "DejaVu Sans",
+                "Liberation Sans",
+                "Ubuntu",
+                "Arial"
+            ]
+
+            
+            for font in arabic_fonts:
+                if is_font_available(font):
+                    return font
+
+            
+            return "Arial"
+
+        elif system == "Windows":
+            
+            windows_fonts = ["Segoe UI", "Tahoma", "Arial Unicode MS", "Arial"]
+            for font in windows_fonts:
+                if is_font_available(font):
+                    return font
+            return "Arial"
+
+        elif system == "Darwin":  
+            mac_fonts = ["SF Arabic", "Arial Unicode MS", "Arial"]
+            for font in mac_fonts:
+                if is_font_available(font):
+                    return font
+            return "Arial"
+
+        return "Arial"
+    except Exception as e:
+        print(f"خطأ في الحصول على الخط العربي: {e}")
+        return "Arial"
+
+def is_font_available(font_name):
+    try:
+        import tkinter.font as tkFont
+        available_fonts = tkFont.families()
+        return font_name in available_fonts
+    except Exception as e:
+        print(f"خطأ في فحص الخط {font_name}: {e}")
+        return False
+
+def configure_arabic_support():
+    try:
+        
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8')
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8')
+
+        
+        try:
+            if platform.system() == "Linux":
+                
+                for arabic_locale in ['ar_SA.UTF-8', 'ar_EG.UTF-8', 'ar.UTF-8', 'C.UTF-8']:
+                    try:
+                        locale.setlocale(locale.LC_ALL, arabic_locale)
+                        break
+                    except locale.Error:
+                        continue
+        except:
+            pass
+
+        return True
+    except Exception as e:
+        print(f"تحذير: لا يمكن تكوين دعم اللغة العربية: {e}")
+        return False
+
+def configure_rtl_widget(widget, widget_type="label"):
+    try:
+        if platform.system() == "Linux":
+            if widget_type == "entry":
+                widget.configure(justify='right')
+            elif widget_type == "label":
+                widget.configure(anchor='e')
+            elif widget_type == "text":
+                widget.configure(justify='right')
+
+        
+        arabic_font = get_arabic_font()
+        if hasattr(widget, 'configure'):
+            try:
+                current_font = widget.cget('font')
+                if current_font:
+                    
+                    if isinstance(current_font, tuple) and len(current_font) >= 2:
+                        size = current_font[1]
+                        style = current_font[2] if len(current_font) > 2 else "normal"
+                        widget.configure(font=(arabic_font, size, style))
+                    else:
+                        widget.configure(font=(arabic_font, 10))
+                else:
+                    widget.configure(font=(arabic_font, 10))
+            except:
+                pass
+
+    except Exception as e:
+        print(f"تحذير: لا يمكن تكوين عنصر الواجهة للعربية: {e}")
+
+def create_arabic_label(parent, text, use_ttk=False, **kwargs):
+    arabic_font = get_arabic_font()
+
+    
+    fixed_text = fix_arabic_text(text)
+
+    if use_ttk:
+        
+        default_kwargs = {
+            'font': (arabic_font, 10)
+        }
+        default_kwargs.update(kwargs)
+        label = ttk.Label(parent, text=fixed_text, **default_kwargs)
+    else:
+        
+        default_kwargs = {
+            'font': (arabic_font, 10),
+            'anchor': 'e' if platform.system() == "Linux" else 'w',
+            'justify': 'right' if platform.system() == "Linux" else 'left'
+        }
+        default_kwargs.update(kwargs)
+        label = tk.Label(parent, text=fixed_text, **default_kwargs)
+
+    return label
+
+def create_arabic_button(parent, text, **kwargs):
+    arabic_font = get_arabic_font()
+
+    
+    fixed_text = fix_arabic_text(text)
+
+    
+    default_kwargs = {
+        'font': (arabic_font, 10, 'bold')
+    }
+
+    
+    default_kwargs.update(kwargs)
+
+    button = tk.Button(parent, text=fixed_text, **default_kwargs)
+    return button
+
+def create_arabic_entry(parent, **kwargs):
+    arabic_font = get_arabic_font()
+
+    
+    default_kwargs = {
+        'font': (arabic_font, 10),
+        'justify': 'right' if platform.system() == "Linux" else 'left'
+    }
+
+    
+    default_kwargs.update(kwargs)
+
+    entry = tk.Entry(parent, **default_kwargs)
+    return entry
+
+def update_widget_text(widget, text):
+    fixed_text = fix_arabic_text(text)
+    try:
+        if hasattr(widget, 'config'):
+            widget.config(text=fixed_text)
+        elif hasattr(widget, 'configure'):
+            widget.configure(text=fixed_text)
+    except Exception as e:
+        print(f"خطأ في تحديث نص العنصر: {e}")
+
+def create_modern_frame(parent, title=None, **kwargs):
+    
+    outer_frame = tk.Frame(parent, bg="#1A1A1A", **kwargs)
+
+    
+    if title:
+        inner_frame = ttk.LabelFrame(outer_frame, text=title, style="TLabelFrame")
+    else:
+        inner_frame = ttk.Frame(outer_frame, style="Secondary.TFrame")
+
+    inner_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+
+    return outer_frame, inner_frame
+
+def create_status_label(parent, text="", status_type="normal"):
+    colors = {
+        "normal": ("#FFFFFF", "#2D2D2D"),
+        "success": ("#FFFFFF", "#107C10"),
+        "warning": ("#FFFFFF", "#FF8C00"),
+        "error": ("#FFFFFF", "#D13438"),
+        "info": ("#FFFFFF", "#0078D4")
+    }
+
+    fg, bg = colors.get(status_type, colors["normal"])
+    arabic_font = get_arabic_font()
+    fixed_text = fix_arabic_text(text)
+
+    label = tk.Label(parent,
+                    text=fixed_text,
+                    bg=bg,
+                    fg=fg,
+                    font=(arabic_font, 10),
+                    padx=12,
+                    pady=6,
+                    anchor='e' if platform.system() == "Linux" else 'w',
+                    justify='right' if platform.system() == "Linux" else 'left')
+
+    return label
+
+def add_hover_effect(widget, enter_color=None, leave_color=None):
+    if enter_color is None:
+        enter_color = "#404040"
+    if leave_color is None:
+        leave_color = "#2D2D2D"
+
+    def on_enter(event):
+        try:
+            widget.configure(bg=enter_color)
+        except:
+            pass
+
+    def on_leave(event):
+        try:
+            widget.configure(bg=leave_color)
+        except:
+            pass
+
+    widget.bind("<Enter>", on_enter)
+    widget.bind("<Leave>", on_leave)
+
+def create_separator(parent, orientation="horizontal"):
+    if orientation == "horizontal":
+        separator = tk.Frame(parent, height=1, bg="#555555")
+        separator.pack(fill=tk.X, padx=10, pady=5)
+    else:
+        separator = tk.Frame(parent, width=1, bg="#555555")
+        separator.pack(fill=tk.Y, padx=5, pady=10)
+
+    return separator
+
+def apply_arabic_fixes_to_app(app):
+    if not ARABIC_SUPPORT:
+        return
+
+    def fix_widget_recursive(widget):
+        try:
+            
+            if hasattr(widget, 'cget'):
+                try:
+                    current_text = widget.cget('text')
+                    if current_text and isinstance(current_text, str):
+                        fixed_text = fix_arabic_text(current_text)
+                        widget.configure(text=fixed_text)
+                except:
+                    pass
+
+            
+            try:
+                arabic_font = get_arabic_font()
+                current_font = widget.cget('font')
+                if current_font:
+                    if isinstance(current_font, tuple) and len(current_font) >= 2:
+                        size = current_font[1]
+                        style = current_font[2] if len(current_font) > 2 else "normal"
+                        widget.configure(font=(arabic_font, size, style))
+                    else:
+                        widget.configure(font=(arabic_font, 10))
+            except:
+                pass
+
+            
+            if platform.system() == "Linux":
+                try:
+                    widget_class = widget.winfo_class()
+                    
+                    if hasattr(widget, 'master') and not str(type(widget)).startswith("<class 'tkinter.ttk"):
+                        if widget_class in ['Label', 'Button']:
+                            widget.configure(anchor='e', justify='right')
+                        elif widget_class == 'Entry':
+                            widget.configure(justify='right')
+                except:
+                    pass
+
+            
+            for child in widget.winfo_children():
+                fix_widget_recursive(child)
+
+        except Exception as e:
+            print(f"خطأ في إصلاح العنصر: {e}")
+
+    
+    fix_widget_recursive(app)
+
+class ArabicText:
+
+    @staticmethod
+    def set_text(widget, text):
+        fixed_text = fix_arabic_text(text)
+        try:
+            widget.configure(text=fixed_text)
+        except:
+            pass
+
+    @staticmethod
+    def set_title(window, title):
+        try:
+            fixed_title = fix_arabic_text(title)
+            window.title(fixed_title)
+        except Exception as e:
+            print(f"خطأ في تعيين عنوان النافذة: {e}")
+            try:
+                
+                window.title(title)
+            except:
+                
+                window.title("Video Editor")
+
+    @staticmethod
+    def get_text(widget):
+        try:
+            text = widget.cget('text')
+            return fix_arabic_text(text) if text else ""
+        except:
+            return ""
+
+    @staticmethod
+    def messagebox_info(title, message):
+        from tkinter import messagebox
+        fixed_title = fix_arabic_text(title)
+        fixed_message = fix_arabic_text(message)
+        return messagebox.showinfo(fixed_title, fixed_message)
+
+    @staticmethod
+    def messagebox_error(title, message):
+        from tkinter import messagebox
+        fixed_title = fix_arabic_text(title)
+        fixed_message = fix_arabic_text(message)
+        return messagebox.showerror(fixed_title, fixed_message)
+
+    @staticmethod
+    def messagebox_warning(title, message):
+        from tkinter import messagebox
+        fixed_title = fix_arabic_text(title)
+        fixed_message = fix_arabic_text(message)
+        return messagebox.showwarning(fixed_title, fixed_message)
+
+    @staticmethod
+    def messagebox_question(title, message):
+        from tkinter import messagebox
+        fixed_title = fix_arabic_text(title)
+        fixed_message = fix_arabic_text(message)
+        return messagebox.askyesno(fixed_title, fixed_message)
 
 class ToolTip:
     def __init__(self, widget, text):
@@ -102,7 +515,23 @@ class ToolTip:
         self.tooltip_window = tk.Toplevel(self.widget)
         self.tooltip_window.wm_overrideredirect(True)
         self.tooltip_window.wm_geometry(f"+{x}+{y}")
-        label = tk.Label(self.tooltip_window, text=self.text, justify=tk.LEFT, background="#FFFFE0", relief=tk.SOLID, borderwidth=1, font=("SegoeUI", "9"), wraplength=250, fg="#000000", padx=4, pady=4)
+
+        
+        arabic_font = get_arabic_font()
+        tooltip_font = (arabic_font, 9)
+        fixed_text = fix_arabic_text(self.text)
+
+        label = tk.Label(self.tooltip_window,
+                        text=fixed_text,
+                        justify=tk.RIGHT if platform.system() == "Linux" else tk.LEFT,
+                        background="#2D2D2D",
+                        relief=tk.SOLID,
+                        borderwidth=1,
+                        font=tooltip_font,
+                        wraplength=250,
+                        fg="#FFFFFF",
+                        padx=8,
+                        pady=6)
         label.pack(ipadx=1)
 
     def hide_tooltip(self, event):
@@ -111,87 +540,15 @@ class ToolTip:
         self.tooltip_window = None
 
 def process_frame_batch(frame_batch, settings, new_width, new_height, original_width, original_height, other_overlays=None):
-    processed_frames = []
     
-    for frame in frame_batch:
-        cropped = frame[settings['crop_top']:original_height - settings['crop_bottom'], settings['crop_left']:original_width - settings['crop_right']]
-        
-        mirrored = cv2.flip(cropped, 1) if settings.get('mirror_enabled', True) else cropped
-            
-        final_frame = cv2.convertScaleAbs(mirrored, alpha=settings['contrast'], beta=(settings['brightness'] - 1) * 100)
-        
-        if other_overlays:
-            for overlay in other_overlays:
-                try:
-                    o_type = overlay.get('type')
-                    x, y, w, h = overlay['x'], overlay['y'], overlay['w'], overlay['h']
-                    
-                    if w <= 0 or h <= 0: continue
+    memory_manager = MemoryManager()
+    frame_processor = FrameProcessor(memory_manager)
 
-                    if o_type == 'logo':
-                        logo_data, oy, ox = overlay['data'], y, x
-                        oh, ow = logo_data.shape[:2]
-                        
-                        y1, x1 = max(0, oy), max(0, ox)
-                        y2, x2 = min(new_height, oy + oh), min(new_width, ox + ow)
-                        
-                        if y1 < y2 and x1 < x2:
-                            logo_y1, logo_x1 = y1 - oy, x1 - ox
-                            logo_y2, logo_x2 = logo_y1 + (y2 - y1), logo_x1 + (x2 - x1)
-                            
-                            if logo_data.shape[2] == 4:
-                                alpha_s = logo_data[logo_y1:logo_y2, logo_x1:logo_x2, 3] / 255.0
-                                alpha_l = 1.0 - alpha_s
-                                for c in range(3):
-                                    final_frame[y1:y2, x1:x2, c] = (alpha_s * logo_data[logo_y1:logo_y2, logo_x1:logo_x2, c] + alpha_l * final_frame[y1:y2, x1:x2, c])
-                            else:
-                                final_frame[y1:y2, x1:x2] = logo_data[logo_y1:logo_y2, logo_x1:logo_x2]
-                    
-                    elif o_type == 'blur':
-                        roi = final_frame[y:y+h, x:x+w]
-                        
-                        ksize = (max(1, w // 4) | 1, max(1, h // 4) | 1)
-                        final_frame[y:y+h, x:x+w] = cv2.GaussianBlur(roi, ksize, 0)
-                    
-                    elif o_type == 'pixelate':
-                        
-                        pixel_size = 20
-                        
-                        x, y, w, h = overlay['x'], overlay['y'], overlay['w'], overlay['h']
-                        roi = final_frame[y:y+h, x:x+w]
-                        if roi.size == 0: continue
-                        
-                        
-                        mask = np.zeros(roi.shape[:2], dtype=np.uint8)
-                        cv2.circle(mask, (w//2, h//2), w//2, 255, -1)
-
-                        
-                        small_roi = cv2.resize(roi, (max(1, w // pixel_size), max(1, h // pixel_size)), interpolation=cv2.INTER_LINEAR)
-                        pixelated_roi = cv2.resize(small_roi, (w, h), interpolation=cv2.INTER_NEAREST)
-
-                        
-                        final_frame[y:y+h, x:x+w] = np.where(mask[..., None].astype(bool), pixelated_roi, roi)
-
-                    elif o_type in ['rect', 'circle']:
-                        color_hex = overlay.get('color', '#FFFF00').lstrip('#')
-                        color_bgr = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0)) 
-                        thickness = overlay.get('thickness', 2)
-                        if o_type == 'rect':
-                            cv2.rectangle(final_frame, (x, y), (x+w, y+h), color_bgr, thickness)
-                        else: 
-                            cv2.ellipse(final_frame, (x + w//2, y + h//2), (w//2, h//2), 0, 0, 360, color_bgr, thickness)
-
-                except Exception as e:
-                    print(f"Error applying overlay: {e}")
-
-        x_mask = np.zeros((new_height, new_width), dtype=np.uint8)
-        cv2.line(x_mask, (0, 0), (new_width, new_height), 255, int(settings['x_thickness']))
-        cv2.line(x_mask, (new_width, 0), (0, new_height), 255, int(settings['x_thickness']))
-        final_frame[x_mask > 0] = np.clip(final_frame[x_mask > 0].astype(np.int16) + int(settings['x_lighten']), 0, 255).astype(np.uint8)
-        
-        processed_frames.append(final_frame)
     
-    return processed_frames
+    return frame_processor.process_frame_batch_optimized(
+        frame_batch, settings, new_width, new_height,
+        original_width, original_height, other_overlays
+    )
 
 def process_audio_chunk_parallel(chunk_data):
     chunk, wave_fade, is_first, is_last = chunk_data
@@ -205,59 +562,1729 @@ def process_audio_chunk_parallel(chunk_data):
     
     return chunk
 
+class MemoryManager:
+
+    def __init__(self):
+        self.memory_threshold = 0.85  
+        self.cleanup_interval = 100   
+        self.frame_cache = deque(maxlen=1000)  
+        self.temp_files = weakref.WeakSet()  
+
+    def get_memory_usage(self):
+        if psutil:
+            return psutil.virtual_memory().percent / 100.0
+        else:
+            
+            return 0.5  
+
+    def get_available_memory_gb(self):
+        if psutil:
+            return psutil.virtual_memory().available / (1024**3)
+        else:
+            
+            return 8.0  
+
+    def should_cleanup(self):
+        return self.get_memory_usage() > self.memory_threshold
+
+    def cleanup_memory(self, force=False):
+        if force or self.should_cleanup():
+            
+            self.frame_cache.clear()
+            
+            gc.collect()
+            
+            self._cleanup_temp_files()
+
+    def _cleanup_temp_files(self):
+        for temp_file in list(self.temp_files):
+            try:
+                if hasattr(temp_file, 'close'):
+                    temp_file.close()
+            except:
+                pass
+
+    def get_optimal_batch_size(self, frame_count, frame_size_mb=25):
+        cpu_count = multiprocessing.cpu_count()
+        available_memory_gb = self.get_available_memory_gb()
+
+        
+        available_memory_mb = available_memory_gb * 1024
+        max_frames_in_memory = int(available_memory_mb * 0.4 / frame_size_mb)  
+
+        
+        optimal_batch_size = min(
+            max_frames_in_memory,
+            max(cpu_count * 8, 128),  
+            frame_count
+        )
+
+        return max(1, optimal_batch_size)
+
 def optimize_memory_usage():
-    import gc
-    gc.collect()  
-    
-def get_optimal_batch_size(frame_count, available_memory_gb=64):
-    cpu_count = multiprocessing.cpu_count()
-    
-    
-    estimated_frame_memory_mb = 25 
-    available_memory_mb = available_memory_gb * 1024
-    
-    
-    max_frames_in_memory = int(available_memory_mb * 0.5 / estimated_frame_memory_mb)
-    
-    
-    
-    optimal_batch_size = min(max_frames_in_memory, max(cpu_count * 16, 256), frame_count)
-    
-    print(f"DEBUG: Optimal batch size calculated: {optimal_batch_size}") 
-    return max(1, optimal_batch_size)
+    gc.collect()
+
+class ResourceMonitor:
+
+    def __init__(self):
+        self.cpu_threshold = 90.0  
+        self.memory_threshold = 85.0  
+        self.disk_threshold = 90.0  
+        self.monitoring_interval = 5.0  
+        self.last_check = time.time()
+
+    def get_system_stats(self):
+        if psutil:
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            memory = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+
+            return {
+                'cpu_percent': cpu_percent,
+                'memory_percent': memory.percent,
+                'memory_available_gb': memory.available / (1024**3),
+                'disk_percent': disk.percent,
+                'disk_free_gb': disk.free / (1024**3)
+            }
+        else:
+            
+            return {
+                'cpu_percent': 50.0,
+                'memory_percent': 60.0,
+                'memory_available_gb': 8.0,
+                'disk_percent': 70.0,
+                'disk_free_gb': 100.0
+            }
+
+    def should_reduce_load(self):
+        current_time = time.time()
+        if current_time - self.last_check < self.monitoring_interval:
+            return False
+
+        self.last_check = current_time
+        stats = self.get_system_stats()
+
+        return (stats['cpu_percent'] > self.cpu_threshold or
+                stats['memory_percent'] > self.memory_threshold or
+                stats['disk_percent'] > self.disk_threshold)
+
+    def get_adaptive_settings(self, base_batch_size, base_workers):
+        stats = self.get_system_stats()
+
+        
+        memory_factor = max(0.3, 1.0 - (stats['memory_percent'] / 100.0))
+        adaptive_batch_size = max(1, int(base_batch_size * memory_factor))
+
+        
+        cpu_factor = max(0.5, 1.0 - (stats['cpu_percent'] / 100.0))
+        adaptive_workers = max(1, int(base_workers * cpu_factor))
+
+        return {
+            'batch_size': adaptive_batch_size,
+            'workers': adaptive_workers,
+            'stats': stats
+        }
+
+class OptimizedVideoIO:
+
+    def __init__(self, memory_manager):
+        self.memory_manager = memory_manager
+        self.read_buffer_size = 1024 * 1024 * 50  
+        self.write_buffer_size = 1024 * 1024 * 100  
+
+    def create_optimized_video_reader(self, video_path):
+        cap = cv2.VideoCapture(video_path)
+
+        
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  
+        cap.set(cv2.CAP_PROP_FPS, 30)  
+
+        return cap
+
+    def create_optimized_video_writer(self, output_path, fps, width, height, use_hardware=True):
+        
+        if use_hardware and self._is_hardware_encoding_available():
+            
+            fourcc = cv2.VideoWriter_fourcc(*'H264')
+        else:
+            
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
+        writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        return writer
+
+    def _is_hardware_encoding_available(self):
+        try:
+            import subprocess
+            result = subprocess.run([ffmpeg_exe_path, '-encoders'],
+                                  capture_output=True, text=True, timeout=10,
+                                  creationflags=SUBPROCESS_CREATION_FLAGS)
+
+            encoders = result.stdout.lower()
+
+            
+            hardware_encoders = {
+                'nvidia': ['h264_nvenc', 'hevc_nvenc', 'av1_nvenc'],
+                'intel': ['h264_qsv', 'hevc_qsv', 'av1_qsv'],
+                'amd': ['h264_amf', 'hevc_amf'],
+                'apple': ['h264_videotoolbox', 'hevc_videotoolbox']
+            }
+
+            available_encoders = {}
+            for vendor, encoder_list in hardware_encoders.items():
+                available_encoders[vendor] = []
+                for encoder in encoder_list:
+                    if encoder in encoders:
+                        available_encoders[vendor].append(encoder)
+
+            return available_encoders
+        except Exception as e:
+            print(f"خطأ في فحص مُرمزات الأجهزة: {e}")
+            return {}
+
+    def get_best_hardware_encoder(self):
+        available = self._is_hardware_encoding_available()
+
+        
+        priority_order = ['nvidia', 'intel', 'amd', 'apple']
+
+        for vendor in priority_order:
+            if vendor in available and available[vendor]:
+                
+                for preferred_codec in ['h264_nvenc', 'h264_qsv', 'h264_amf', 'h264_videotoolbox']:
+                    if preferred_codec in available[vendor]:
+                        return preferred_codec, vendor
+
+                
+                return available[vendor][0], vendor
+
+        return None, None
+
+    def analyze_video_content(self, video_path):
+        try:
+            import subprocess
+            import json
+
+            
+            probe_command = [
+                ffprobe_exe_path, '-v', 'quiet', '-print_format', 'json',
+                '-show_format', '-show_streams', '-show_frames', '-select_streams', 'v:0',
+                '-read_intervals', '%+#10', video_path  
+            ]
+
+            result = subprocess.run(probe_command, capture_output=True, text=True,
+                                  timeout=30, creationflags=SUBPROCESS_CREATION_FLAGS)
+
+            if result.returncode != 0:
+                return self._get_default_analysis()
+
+            data = json.loads(result.stdout)
+
+            
+            video_stream = None
+            for stream in data.get('streams', []):
+                if stream.get('codec_type') == 'video':
+                    video_stream = stream
+                    break
+
+            if not video_stream:
+                return self._get_default_analysis()
+
+            
+            width = int(video_stream.get('width', 1920))
+            height = int(video_stream.get('height', 1080))
+            fps = eval(video_stream.get('r_frame_rate', '30/1'))
+            duration = float(data.get('format', {}).get('duration', 0))
+            bitrate = int(data.get('format', {}).get('bit_rate', 0))
+
+            
+            frames = data.get('frames', [])
+            motion_analysis = self._analyze_motion_complexity(frames)
+
+            
+            content_type = self._determine_content_type(width, height, fps, motion_analysis, duration)
+
+            
+            suggested_settings = self._suggest_compression_settings(
+                width, height, fps, duration, bitrate, content_type, motion_analysis
+            )
+
+            return {
+                'width': width,
+                'height': height,
+                'fps': fps,
+                'duration': duration,
+                'bitrate': bitrate,
+                'content_type': content_type,
+                'motion_complexity': motion_analysis,
+                'suggested_settings': suggested_settings
+            }
+
+        except Exception as e:
+            print(f"خطأ في تحليل الفيديو: {e}")
+            return self._get_default_analysis()
+
+    def _analyze_motion_complexity(self, frames):
+        if not frames:
+            return 'medium'
+
+        try:
+            
+            frame_sizes = []
+            for frame in frames[:10]:  
+                if 'pkt_size' in frame:
+                    frame_sizes.append(int(frame['pkt_size']))
+
+            if not frame_sizes:
+                return 'medium'
+
+            avg_size = sum(frame_sizes) / len(frame_sizes)
+            size_variance = sum((x - avg_size) ** 2 for x in frame_sizes) / len(frame_sizes)
+
+            
+            if size_variance < avg_size * 0.1:
+                return 'low'  
+            elif size_variance > avg_size * 0.5:
+                return 'high'  
+            else:
+                return 'medium'  
+
+        except:
+            return 'medium'
+
+    def _determine_content_type(self, width, height, fps, motion_complexity, duration):
+        
+        if fps >= 50:
+            return 'sports_gaming'  
+        elif width >= 3840:  
+            return '4k_content'
+        elif motion_complexity == 'low' and duration > 1800:  
+            return 'presentation_lecture'  
+        elif motion_complexity == 'high':
+            return 'action_gaming'  
+        elif width <= 720:
+            return 'web_content'  
+        else:
+            return 'general_video'  
+
+    def _suggest_compression_settings(self, width, height, fps, duration, bitrate, content_type, motion_complexity):
+        suggestions = {}
+
+        
+        if content_type == 'sports_gaming':
+            suggestions['preset'] = 'أعلى جودة ممكنة (ملف كبير)'
+            suggestions['reason'] = 'محتوى رياضي أو ألعاب يتطلب جودة عالية'
+        elif content_type == '4k_content':
+            suggestions['preset'] = 'جودة عالية جداً (4K)'
+            suggestions['reason'] = 'محتوى 4K يحتاج إعدادات خاصة'
+        elif content_type == 'presentation_lecture':
+            suggestions['preset'] = '720p (HD) - سريع'
+            suggestions['reason'] = 'محتوى تعليمي يمكن ضغطه بكفاءة'
+        elif content_type == 'action_gaming':
+            suggestions['preset'] = '1080p (Full HD) - جودة ممتازة'
+            suggestions['reason'] = 'محتوى حركة يحتاج توازن بين الجودة والحجم'
+        elif content_type == 'web_content':
+            suggestions['preset'] = '480p (SD) - جودة جيدة'
+            suggestions['reason'] = 'محتوى ويب مناسب للمشاركة'
+        else:
+            suggestions['preset'] = '1080p (Full HD) - متوازن'
+            suggestions['reason'] = 'إعدادات متوازنة للمحتوى العام'
+
+        
+        suggestions['hardware_encoding'] = True
+        suggestions['hardware_reason'] = 'استخدام تشفير الأجهزة لسرعة أكبر'
+
+        if duration > 3600:  
+            suggestions['chunking'] = True
+            suggestions['chunking_reason'] = 'تقسيم الفيديو الطويل لمعالجة أفضل'
+
+        return suggestions
+
+    def _get_default_analysis(self):
+        return {
+            'width': 1920,
+            'height': 1080,
+            'fps': 30,
+            'duration': 0,
+            'bitrate': 0,
+            'content_type': 'general_video',
+            'motion_complexity': 'medium',
+            'suggested_settings': {
+                'preset': '1080p (Full HD) - متوازن',
+                'reason': 'إعدادات افتراضية آمنة',
+                'hardware_encoding': True,
+                'hardware_reason': 'استخدام تشفير الأجهزة إذا كان متاحاً'
+            }
+        }
+
+    def get_optimized_ffmpeg_params(self, input_path, output_path, settings):
+        base_params = [
+            ffmpeg_exe_path,
+            '-i', input_path,
+            '-threads', str(multiprocessing.cpu_count()),  
+        ]
+
+        
+        if settings.get('compression_enabled', False):
+            preset_name = settings.get('quality_preset', '1080p (Full HD) - متوازن')
+            preset_config = QUALITY_PRESETS.get(preset_name, QUALITY_PRESETS['1080p (Full HD) - متوازن'])
+
+            
+            hardware_encoder, vendor = self.get_best_hardware_encoder()
+            use_hardware = settings.get('use_hardware_encoding', True) and hardware_encoder
+
+            if use_hardware:
+                
+                base_params.extend(['-c:v', hardware_encoder])
+
+                
+                if 'nvenc' in hardware_encoder:
+                    
+                    base_params.extend([
+                        '-preset', 'p4',  
+                        '-tune', 'hq',    
+                        '-rc', 'vbr',     
+                        '-cq', preset_config['crf'],
+                        '-b:v', '0',      
+                        '-profile:v', 'main'
+                    ])
+                elif 'qsv' in hardware_encoder:
+                    
+                    base_params.extend([
+                        '-preset', 'medium',
+                        '-global_quality', preset_config['crf'],
+                        '-look_ahead', '1',
+                        '-profile:v', 'main'
+                    ])
+                elif 'amf' in hardware_encoder:
+                    
+                    base_params.extend([
+                        '-quality', 'balanced',
+                        '-rc', 'cqp',
+                        '-qp_i', preset_config['crf'],
+                        '-qp_p', preset_config['crf'],
+                        '-profile:v', 'main'
+                    ])
+                elif 'videotoolbox' in hardware_encoder:
+                    
+                    base_params.extend([
+                        '-q:v', preset_config['crf'],
+                        '-profile:v', 'main'
+                    ])
+            else:
+                
+                base_params.extend([
+                    '-c:v', 'libx264',
+                    '-crf', preset_config['crf'],
+                    '-preset', preset_config['preset'],
+                    '-tune', preset_config.get('tune', 'film'),
+                    '-profile:v', preset_config.get('profile', 'main'),
+                    '-level', preset_config.get('level', '4.0')
+                ])
+
+                
+                if preset_config.get('additional_params'):
+                    base_params.extend(preset_config['additional_params'])
+
+                
+                base_params.extend([
+                    '-g', '250',  
+                    '-keyint_min', '25',  
+                    '-sc_threshold', '40',  
+                    '-bf', '3',  
+                    '-b_strategy', '2',  
+                    '-refs', '3',  
+                    '-coder', '1',  
+                    '-me_method', 'hex',  
+                    '-subq', '7',  
+                    '-trellis', '1',  
+                    '-aq-mode', '1',  
+                    '-aq-strength', '1.0'  
+                ])
+
+            
+            if preset_config['resolution']:
+                base_params.extend(['-vf', f"scale=-2:{preset_config['resolution']}:flags=lanczos"])
+
+        else:
+            
+            base_params.extend([
+                '-c:v', 'libx264',
+                '-preset', 'medium',
+                '-crf', '23',
+                '-tune', 'film',
+                '-profile:v', 'main'
+            ])
+
+        
+        base_params.extend([
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-ar', '48000',  
+            '-ac', '2',      
+            '-aac_coder', 'twoloop'  
+        ])
+
+        
+        base_params.extend([
+            '-movflags', '+faststart+use_metadata_tags',  
+            '-pix_fmt', 'yuv420p',      
+            '-colorspace', 'bt709',     
+            '-color_primaries', 'bt709',
+            '-color_trc', 'bt709',
+            '-avoid_negative_ts', 'make_zero',  
+            '-fflags', '+genpts',       
+            '-y',                       
+            output_path
+        ])
+
+        return base_params
+
+class StreamingVideoProcessor:
+
+    def __init__(self, memory_manager, io_manager):
+        self.memory_manager = memory_manager
+        self.io_manager = io_manager
+        self.chunk_duration = 300  
+
+    def process_large_video_streaming(self, input_path, output_path, settings,
+                                    status_callback, cancel_event):
+        try:
+            
+            video_info = self._get_video_info(input_path)
+            total_duration = video_info['duration']
+
+            if total_duration <= self.chunk_duration:
+                
+                return self._process_normal_video(input_path, output_path, settings,
+                                                status_callback, cancel_event)
+
+            
+            return self._process_video_in_chunks(input_path, output_path, settings,
+                                               video_info, status_callback, cancel_event)
+
+        except Exception as e:
+            status_callback(f"خطأ في معالجة الفيديو: {e}")
+            return False
+
+    def _get_video_info(self, video_path):
+        probe_command = [
+            ffprobe_exe_path, '-v', 'quiet', '-print_format', 'json',
+            '-show_format', '-show_streams', video_path
+        ]
+
+        result = subprocess.run(probe_command, capture_output=True, text=True,
+                              creationflags=SUBPROCESS_CREATION_FLAGS)
+
+        if result.returncode != 0:
+            raise Exception(f"فشل في قراءة معلومات الفيديو: {result.stderr}")
+
+        info = json.loads(result.stdout)
+        duration = float(info['format']['duration'])
+
+        return {'duration': duration, 'info': info}
+
+    def _process_normal_video(self, input_path, output_path, settings,
+                            status_callback, cancel_event):
+        
+        chunk_settings = settings.copy()
+        chunk_settings.update({
+            'input_path': input_path,
+            'output_path': output_path,
+            'chunk_index': 0,
+            'total_chunks': 1
+        })
+
+        result = process_video_chunk(chunk_settings, cancel_event, status_callback)
+        return result is not None
+
+    def _process_video_in_chunks(self, input_path, output_path, settings,
+                               video_info, status_callback, cancel_event):
+        total_duration = video_info['duration']
+        num_chunks = int(np.ceil(total_duration / self.chunk_duration))
+
+        status_callback(f"سيتم تقسيم الفيديو إلى {num_chunks} جزء للمعالجة")
+
+        temp_chunks = []
+        temp_dir = os.path.join(base_path, "temp_videos")
+
+        try:
+            
+            for i in range(num_chunks):
+                if cancel_event.is_set():
+                    return False
+
+                start_time = i * self.chunk_duration
+                chunk_output = os.path.join(temp_dir, f"chunk_{i}.mp4")
+                temp_chunks.append(chunk_output)
+
+                
+                split_command = [
+                    ffmpeg_exe_path, '-ss', str(start_time), '-i', input_path,
+                    '-t', str(self.chunk_duration), '-c', 'copy', '-y', chunk_output
+                ]
+
+                result = subprocess.run(split_command, capture_output=True, text=True,
+                                      creationflags=SUBPROCESS_CREATION_FLAGS)
+
+                if result.returncode != 0:
+                    raise Exception(f"فشل في تقسيم الجزء {i}: {result.stderr}")
+
+                status_callback(f"تم تقسيم الجزء {i+1}/{num_chunks}")
+
+            
+            processed_chunks = []
+            for i, chunk_path in enumerate(temp_chunks):
+                if cancel_event.is_set():
+                    return False
+
+                chunk_output = os.path.join(temp_dir, f"processed_chunk_{i}.mp4")
+                processed_chunks.append(chunk_output)
+
+                chunk_settings = settings.copy()
+                chunk_settings.update({
+                    'input_path': chunk_path,
+                    'output_path': chunk_output,
+                    'chunk_index': i,
+                    'total_chunks': num_chunks
+                })
+
+                result = process_video_chunk(chunk_settings, cancel_event, status_callback)
+                if not result:
+                    raise Exception(f"فشل في معالجة الجزء {i}")
+
+                status_callback(f"تمت معالجة الجزء {i+1}/{num_chunks}")
+
+            
+            self._merge_processed_chunks(processed_chunks, output_path, status_callback)
+
+            return True
+
+        finally:
+            
+            for chunk_file in temp_chunks + processed_chunks:
+                if os.path.exists(chunk_file):
+                    try:
+                        os.remove(chunk_file)
+                    except:
+                        pass
+
+    def _merge_processed_chunks(self, chunk_files, output_path, status_callback):
+        status_callback("بدء دمج الأجزاء المعالجة...")
+
+        
+        concat_file = os.path.join(os.path.dirname(output_path), "concat_list.txt")
+
+        try:
+            with open(concat_file, 'w', encoding='utf-8') as f:
+                for chunk_file in chunk_files:
+                    if os.path.exists(chunk_file):
+                        f.write(f"file '{os.path.abspath(chunk_file)}'\n")
+
+            
+            merge_command = [
+                ffmpeg_exe_path, '-f', 'concat', '-safe', '0', '-i', concat_file,
+                '-c', 'copy', '-y', output_path
+            ]
+
+            result = subprocess.run(merge_command, capture_output=True, text=True,
+                                  creationflags=SUBPROCESS_CREATION_FLAGS)
+
+            if result.returncode != 0:
+                raise Exception(f"فشل في دمج الأجزاء: {result.stderr}")
+
+            status_callback("تم دمج جميع الأجزاء بنجاح")
+
+        finally:
+            if os.path.exists(concat_file):
+                try:
+                    os.remove(concat_file)
+                except:
+                    pass
+
+class AdaptiveProcessingController:
+
+    def __init__(self):
+        self.memory_manager = MemoryManager()
+        self.resource_monitor = ResourceMonitor()
+        self.io_manager = OptimizedVideoIO(self.memory_manager)
+        self.streaming_processor = StreamingVideoProcessor(self.memory_manager, self.io_manager)
+
+        
+        self.performance_history = deque(maxlen=10)
+        self.adjustment_factor = 0.1  
+
+        
+        self.performance_data_file = os.path.join(base_path, "performance_history.json")
+        self.load_performance_history()
+
+    def get_processing_strategy(self, video_path, settings):
+        try:
+            
+            cap = cv2.VideoCapture(video_path)
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+
+            
+            duration = frame_count / fps if fps > 0 else 0
+            estimated_size_gb = (frame_count * width * height * 3) / (1024**3)
+
+            
+            system_stats = self.resource_monitor.get_system_stats()
+
+            strategy = {
+                'use_chunking': False,
+                'chunk_size_minutes': 5,
+                'use_streaming': False,
+                'parallel_processing': True,
+                'batch_size': self.memory_manager.get_optimal_batch_size(frame_count),
+                'max_workers': multiprocessing.cpu_count(),
+                'estimated_duration_minutes': duration / 60,
+                'estimated_size_gb': estimated_size_gb
+            }
+
+            
+            if duration > 1800:  
+                strategy['use_chunking'] = True
+                strategy['chunk_size_minutes'] = min(10, max(5, duration / 20))
+
+            if estimated_size_gb > system_stats['memory_available_gb'] * 0.5:
+                strategy['use_streaming'] = True
+                strategy['batch_size'] = max(1, strategy['batch_size'] // 2)
+
+            if system_stats['cpu_percent'] > 80:
+                strategy['max_workers'] = max(1, strategy['max_workers'] // 2)
+
+            if system_stats['memory_percent'] > 80:
+                strategy['batch_size'] = max(1, strategy['batch_size'] // 2)
+                strategy['parallel_processing'] = False
+
+            return strategy
+
+        except Exception as e:
+            print(f"خطأ في تحديد استراتيجية المعالجة: {e}")
+            
+            return {
+                'use_chunking': True,
+                'chunk_size_minutes': 5,
+                'use_streaming': False,
+                'parallel_processing': False,
+                'batch_size': 32,
+                'max_workers': 2,
+                'estimated_duration_minutes': 0,
+                'estimated_size_gb': 0
+            }
+
+    def monitor_and_adjust_processing(self, current_settings, performance_data):
+        self.performance_history.append(performance_data)
+
+        if len(self.performance_history) < 3:
+            return current_settings  
+
+        
+        recent_performance = list(self.performance_history)[-3:]
+        avg_cpu = sum(p['cpu_percent'] for p in recent_performance) / len(recent_performance)
+        avg_memory = sum(p['memory_percent'] for p in recent_performance) / len(recent_performance)
+        avg_processing_time = sum(p.get('processing_time', 0) for p in recent_performance) / len(recent_performance)
+
+        adjusted_settings = current_settings.copy()
+
+        
+        if avg_cpu > 95:
+            
+            adjusted_settings['max_workers'] = max(1, int(current_settings['max_workers'] * 0.8))
+            adjusted_settings['batch_size'] = max(1, int(current_settings['batch_size'] * 0.8))
+        elif avg_cpu < 60:
+            
+            adjusted_settings['max_workers'] = min(multiprocessing.cpu_count(),
+                                                 int(current_settings['max_workers'] * 1.2))
+            adjusted_settings['batch_size'] = int(current_settings['batch_size'] * 1.1)
+
+        
+        if avg_memory > 90:
+            
+            adjusted_settings['batch_size'] = max(1, int(current_settings['batch_size'] * 0.7))
+            adjusted_settings['force_cleanup'] = True
+        elif avg_memory < 50:
+            
+            adjusted_settings['batch_size'] = int(current_settings['batch_size'] * 1.1)
+
+        
+        if avg_processing_time > 0:
+            target_time = 2.0  
+            if avg_processing_time > target_time * 1.5:
+                
+                adjusted_settings['batch_size'] = max(1, int(current_settings['batch_size'] * 0.9))
+            elif avg_processing_time < target_time * 0.5:
+                
+                adjusted_settings['batch_size'] = int(current_settings['batch_size'] * 1.1)
+
+        return adjusted_settings
+
+    def estimate_processing_time(self, video_path, settings):
+        try:
+            strategy = self.get_processing_strategy(video_path, settings)
+
+            
+            cap = cv2.VideoCapture(video_path)
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+
+            
+            resolution_factor = (width * height) / (1920 * 1080)  
+            duration_minutes = (frame_count / fps) / 60 if fps > 0 else 0
+
+            
+            base_time_per_minute = 2.0  
+
+            
+            base_time_per_minute *= resolution_factor
+
+            
+            if strategy['parallel_processing']:
+                cpu_cores = multiprocessing.cpu_count()
+                parallel_efficiency = min(0.8, cpu_cores * 0.15)  
+                base_time_per_minute *= (1 - parallel_efficiency)
+
+            if strategy['use_streaming']:
+                base_time_per_minute *= 1.3  
+
+            if strategy['use_chunking']:
+                base_time_per_minute *= 1.1  
+
+            
+            if settings.get('compression_enabled', False):
+                preset = settings.get('quality_preset', '1080p (Full HD)')
+                if 'أعلى جودة' in preset:
+                    base_time_per_minute *= 3.0
+                elif '1080p' in preset:
+                    base_time_per_minute *= 2.0
+                elif '720p' in preset:
+                    base_time_per_minute *= 1.5
+                elif '480p' in preset:
+                    base_time_per_minute *= 1.2
+
+            
+            if settings.get('overlays'):
+                overlay_count = len(settings['overlays'])
+                base_time_per_minute *= (1 + overlay_count * 0.2)
+
+            
+            system_stats = self.resource_monitor.get_system_stats()
+            if system_stats['memory_percent'] > 80:
+                base_time_per_minute *= 1.4  
+            elif system_stats['cpu_percent'] > 80:
+                base_time_per_minute *= 1.3
+
+            estimated_minutes = duration_minutes * base_time_per_minute
+
+            
+            video_info = {
+                'resolution_factor': resolution_factor,
+                'duration_minutes': duration_minutes
+            }
+            historical_factor = self.get_historical_accuracy_factor(video_info, settings)
+            estimated_minutes *= historical_factor
+
+            
+            estimated_minutes *= 1.15
+
+            return {
+                'estimated_minutes': estimated_minutes,
+                'estimated_hours': estimated_minutes / 60,
+                'strategy': strategy,
+                'factors': {
+                    'resolution_factor': resolution_factor,
+                    'duration_minutes': duration_minutes,
+                    'base_time_per_minute': base_time_per_minute,
+                    'system_load': system_stats['cpu_percent'],
+                    'historical_factor': historical_factor,
+                    'similar_cases': len([r for r in self.performance_history if abs(r.get('video_info', {}).get('resolution_factor', 1) - resolution_factor) < 0.5])
+                }
+            }
+
+        except Exception as e:
+            print(f"خطأ في تقدير وقت المعالجة: {e}")
+            return {
+                'estimated_minutes': 0,
+                'estimated_hours': 0,
+                'strategy': {},
+                'factors': {}
+            }
+
+    def load_performance_history(self):
+        try:
+            if os.path.exists(self.performance_data_file):
+                with open(self.performance_data_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.performance_history.extend(data.get('history', []))
+        except Exception as e:
+            print(f"خطأ في تحميل بيانات الأداء: {e}")
+
+    def save_performance_data(self, actual_time, estimated_time, video_info, settings):
+        try:
+            performance_record = {
+                'timestamp': time.time(),
+                'actual_time_minutes': actual_time / 60,
+                'estimated_time_minutes': estimated_time,
+                'accuracy_ratio': (actual_time / 60) / estimated_time if estimated_time > 0 else 1,
+                'video_info': video_info,
+                'settings': {
+                    'compression_enabled': settings.get('compression_enabled', False),
+                    'quality_preset': settings.get('quality_preset', ''),
+                    'parallel_processing': settings.get('processing_mode', '') == 'parallel',
+                    'chunking_enabled': settings.get('enable_chunking', False)
+                }
+            }
+
+            self.performance_history.append(performance_record)
+
+            
+            data = {'history': list(self.performance_history)}
+            with open(self.performance_data_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+
+        except Exception as e:
+            print(f"خطأ في حفظ بيانات الأداء: {e}")
+
+    def get_historical_accuracy_factor(self, video_info, settings):
+        if not self.performance_history:
+            return 1.0
+
+        try:
+            
+            similar_cases = []
+            for record in self.performance_history:
+                similarity_score = 0
+
+                
+                if abs(record['video_info'].get('resolution_factor', 1) - video_info.get('resolution_factor', 1)) < 0.5:
+                    similarity_score += 1
+
+                
+                if record['settings']['compression_enabled'] == settings.get('compression_enabled', False):
+                    similarity_score += 1
+
+                if record['settings']['parallel_processing'] == (settings.get('processing_mode', '') == 'parallel'):
+                    similarity_score += 1
+
+                if similarity_score >= 2:  
+                    similar_cases.append(record['accuracy_ratio'])
+
+            if similar_cases:
+                
+                return sum(similar_cases) / len(similar_cases)
+            else:
+                
+                all_ratios = [r['accuracy_ratio'] for r in self.performance_history]
+                return sum(all_ratios) / len(all_ratios)
+
+        except Exception as e:
+            print(f"خطأ في حساب معامل الدقة: {e}")
+            return 1.0
+
+class CheckpointManager:
+
+    def __init__(self, base_path):
+        self.base_path = base_path
+        self.checkpoints_dir = os.path.join(base_path, "checkpoints")
+        os.makedirs(self.checkpoints_dir, exist_ok=True)
+
+    def save_checkpoint(self, job_id, progress_data):
+        try:
+            checkpoint_file = os.path.join(self.checkpoints_dir, f"{job_id}.json")
+            checkpoint_data = {
+                'timestamp': time.time(),
+                'progress': progress_data,
+                'version': '1.0'
+            }
+
+            with open(checkpoint_file, 'w', encoding='utf-8') as f:
+                json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+
+            return True
+        except Exception as e:
+            print(f"خطأ في حفظ نقطة التحكم: {e}")
+            return False
+
+    def load_checkpoint(self, job_id):
+        try:
+            checkpoint_file = os.path.join(self.checkpoints_dir, f"{job_id}.json")
+            if not os.path.exists(checkpoint_file):
+                return None
+
+            with open(checkpoint_file, 'r', encoding='utf-8') as f:
+                checkpoint_data = json.load(f)
+
+            return checkpoint_data['progress']
+        except Exception as e:
+            print(f"خطأ في تحميل نقطة التحكم: {e}")
+            return None
+
+    def delete_checkpoint(self, job_id):
+        try:
+            checkpoint_file = os.path.join(self.checkpoints_dir, f"{job_id}.json")
+            if os.path.exists(checkpoint_file):
+                os.remove(checkpoint_file)
+            return True
+        except Exception as e:
+            print(f"خطأ في حذف نقطة التحكم: {e}")
+            return False
+
+    def list_checkpoints(self):
+        try:
+            checkpoints = []
+            for file in os.listdir(self.checkpoints_dir):
+                if file.endswith('.json'):
+                    job_id = file[:-5]  
+                    checkpoint_data = self.load_checkpoint(job_id)
+                    if checkpoint_data:
+                        checkpoints.append({
+                            'job_id': job_id,
+                            'data': checkpoint_data
+                        })
+            return checkpoints
+        except Exception as e:
+            print(f"خطأ في قراءة نقاط التحكم: {e}")
+            return []
+
+class LongVideoProcessor:
+
+    def __init__(self, adaptive_controller):
+        self.adaptive_controller = adaptive_controller
+        self.checkpoint_manager = CheckpointManager(base_path)
+        self.progress_callback = None
+        self.cancel_event = None
+
+    def process_long_video(self, input_path, output_path, settings,
+                          progress_callback, cancel_event, resume_job_id=None):
+        self.progress_callback = progress_callback
+        self.cancel_event = cancel_event
+
+        
+        job_id = resume_job_id or f"job_{int(time.time())}_{os.path.basename(input_path)}"
+
+        try:
+            
+            checkpoint_data = None
+            if resume_job_id:
+                checkpoint_data = self.checkpoint_manager.load_checkpoint(resume_job_id)
+                if checkpoint_data:
+                    progress_callback(f"تم العثور على نقطة تحكم، استئناف المعالجة من {checkpoint_data.get('completed_chunks', 0)} جزء")
+
+            
+            strategy = self.adaptive_controller.get_processing_strategy(input_path, settings)
+            progress_callback(f"استراتيجية المعالجة: {self._format_strategy(strategy)}")
+
+            
+            time_estimate = self.adaptive_controller.estimate_processing_time(input_path, settings)
+            progress_callback(f"الوقت المقدر للمعالجة: {time_estimate['estimated_hours']:.1f} ساعة")
+
+            
+            if strategy['use_streaming']:
+                return self._process_with_streaming(input_path, output_path, settings,
+                                                  strategy, job_id, checkpoint_data)
+            else:
+                return self._process_with_chunking(input_path, output_path, settings,
+                                                 strategy, job_id, checkpoint_data)
+
+        except Exception as e:
+            progress_callback(f"خطأ في معالجة الفيديو الطويل: {e}")
+            return False
+        finally:
+            
+            if not cancel_event.is_set():
+                self.checkpoint_manager.delete_checkpoint(job_id)
+
+    def _format_strategy(self, strategy):
+        parts = []
+        if strategy['use_chunking']:
+            parts.append(f"تقسيم إلى أجزاء ({strategy['chunk_size_minutes']} دقائق)")
+        if strategy['use_streaming']:
+            parts.append("معالجة تدفقية")
+        if strategy['parallel_processing']:
+            parts.append(f"معالجة متوازية ({strategy['max_workers']} عامل)")
+        parts.append(f"حجم الدفعة: {strategy['batch_size']}")
+        return ", ".join(parts)
+
+    def _process_with_streaming(self, input_path, output_path, settings,
+                              strategy, job_id, checkpoint_data):
+        return self.adaptive_controller.streaming_processor.process_large_video_streaming(
+            input_path, output_path, settings, self.progress_callback, self.cancel_event
+        )
+
+    def _process_with_chunking(self, input_path, output_path, settings,
+                             strategy, job_id, checkpoint_data):
+        try:
+            
+            start_chunk = 0
+            completed_chunks = []
+
+            if checkpoint_data:
+                start_chunk = checkpoint_data.get('completed_chunks', 0)
+                completed_chunks = checkpoint_data.get('chunk_files', [])
+
+            
+            video_info = self.adaptive_controller.streaming_processor._get_video_info(input_path)
+            total_duration = video_info['duration']
+            chunk_duration_seconds = strategy['chunk_size_minutes'] * 60
+            total_chunks = int(np.ceil(total_duration / chunk_duration_seconds))
+
+            self.progress_callback(f"سيتم تقسيم الفيديو إلى {total_chunks} جزء")
+
+            temp_dir = os.path.join(base_path, "temp_videos")
+            chunk_files = []
+
+            
+            for chunk_index in range(start_chunk, total_chunks):
+                if self.cancel_event.is_set():
+                    
+                    self._save_progress_checkpoint(job_id, chunk_index, chunk_files, total_chunks)
+                    return False
+
+                
+                chunk_result = self._process_single_chunk(
+                    input_path, chunk_index, chunk_duration_seconds,
+                    settings, strategy, temp_dir
+                )
+
+                if chunk_result:
+                    chunk_files.append(chunk_result)
+
+                    
+                    if chunk_index % 5 == 0:  
+                        self._save_progress_checkpoint(job_id, chunk_index + 1, chunk_files, total_chunks)
+
+                    progress = ((chunk_index + 1) / total_chunks) * 90  
+                    self.progress_callback(f"تمت معالجة الجزء {chunk_index + 1}/{total_chunks}", progress)
+                else:
+                    self.progress_callback(f"فشل في معالجة الجزء {chunk_index + 1}")
+                    return False
+
+            
+            self.progress_callback("بدء دمج الأجزاء النهائية...", 90)
+            merge_success = self._merge_chunks(chunk_files, output_path)
+
+            if merge_success:
+                self.progress_callback("تمت المعالجة بنجاح!", 100)
+                return True
+            else:
+                self.progress_callback("فشل في دمج الأجزاء")
+                return False
+
+        except Exception as e:
+            self.progress_callback(f"خطأ في المعالجة بالتقسيم: {e}")
+            return False
+        finally:
+            
+            self._cleanup_temp_files(chunk_files)
+
+    def _process_single_chunk(self, input_path, chunk_index, chunk_duration,
+                            settings, strategy, temp_dir):
+        try:
+            start_time = chunk_index * chunk_duration
+            chunk_output = os.path.join(temp_dir, f"processed_chunk_{chunk_index}.mp4")
+
+            
+            chunk_settings = settings.copy()
+            chunk_settings.update({
+                'input_path': input_path,
+                'output_path': chunk_output,
+                'chunk_index': chunk_index,
+                'total_chunks': 1,  
+                'start_time': start_time,
+                'duration': chunk_duration
+            })
+
+            
+            result = process_video_chunk(chunk_settings, self.cancel_event, self.progress_callback)
+
+            return result if result and os.path.exists(chunk_output) else None
+
+        except Exception as e:
+            self.progress_callback(f"خطأ في معالجة الجزء {chunk_index}: {e}")
+            return None
+
+    def _save_progress_checkpoint(self, job_id, completed_chunks, chunk_files, total_chunks):
+        progress_data = {
+            'completed_chunks': completed_chunks,
+            'total_chunks': total_chunks,
+            'chunk_files': [f for f in chunk_files if os.path.exists(f)],
+            'timestamp': time.time()
+        }
+
+        self.checkpoint_manager.save_checkpoint(job_id, progress_data)
+
+    def _merge_chunks(self, chunk_files, output_path):
+        try:
+            
+            valid_chunks = [f for f in chunk_files if os.path.exists(f)]
+
+            if not valid_chunks:
+                return False
+
+            
+            concat_file = os.path.join(os.path.dirname(output_path), "concat_list.txt")
+
+            with open(concat_file, 'w', encoding='utf-8') as f:
+                for chunk_file in valid_chunks:
+                    f.write(f"file '{os.path.abspath(chunk_file)}'\n")
+
+            
+            merge_command = [
+                ffmpeg_exe_path, '-f', 'concat', '-safe', '0', '-i', concat_file,
+                '-c', 'copy', '-y', output_path
+            ]
+
+            result = subprocess.run(merge_command, capture_output=True, text=True,
+                                  creationflags=SUBPROCESS_CREATION_FLAGS)
+
+            
+            if os.path.exists(concat_file):
+                os.remove(concat_file)
+
+            return result.returncode == 0
+
+        except Exception as e:
+            self.progress_callback(f"خطأ في دمج الأجزاء: {e}")
+            return False
+
+    def _cleanup_temp_files(self, chunk_files):
+        for chunk_file in chunk_files:
+            if os.path.exists(chunk_file):
+                try:
+                    os.remove(chunk_file)
+                except:
+                    pass
+
+class PerformanceTester:
+
+    def __init__(self):
+        self.test_results = []
+
+    def run_comprehensive_test(self, video_path, settings, status_callback):
+        results = {
+            'timestamp': time.time(),
+            'video_path': video_path,
+            'settings': settings.copy(),
+            'system_info': self._get_system_info(),
+            'tests': {}
+        }
+
+        try:
+            status_callback("بدء الاختبار الشامل للأداء...")
+
+            
+            results['tests']['video_reading'] = self._test_video_reading(video_path, status_callback)
+
+            
+            results['tests']['frame_processing'] = self._test_frame_processing(video_path, settings, status_callback)
+
+            
+            results['tests']['memory_usage'] = self._test_memory_usage(video_path, settings, status_callback)
+
+            
+            results['tests']['parallel_performance'] = self._test_parallel_performance(video_path, settings, status_callback)
+
+            
+            self.test_results.append(results)
+            self._save_test_results(results)
+
+            status_callback("اكتمل الاختبار الشامل")
+            return results
+
+        except Exception as e:
+            status_callback(f"خطأ في الاختبار الشامل: {e}")
+            return None
+
+    def _get_system_info(self):
+        return {
+            'cpu_count': psutil.cpu_count(),
+            'cpu_freq': psutil.cpu_freq()._asdict() if psutil.cpu_freq() else None,
+            'memory_total_gb': psutil.virtual_memory().total / (1024**3),
+            'disk_total_gb': psutil.disk_usage('/').total / (1024**3),
+            'platform': sys.platform
+        }
+
+    def _test_video_reading(self, video_path, status_callback):
+        status_callback("اختبار قراءة الفيديو...")
+
+        start_time = time.time()
+        cap = cv2.VideoCapture(video_path)
+
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        
+        sample_size = min(200, frame_count)
+        frames_read = 0
+
+        for i in range(sample_size):
+            ret, frame = cap.read()
+            if ret:
+                frames_read += 1
+            else:
+                break
+
+        cap.release()
+        read_time = time.time() - start_time
+
+        return {
+            'frames_read': frames_read,
+            'total_frames': frame_count,
+            'read_time': read_time,
+            'fps_reading': frames_read / read_time if read_time > 0 else 0,
+            'video_fps': fps,
+            'resolution': f"{width}x{height}"
+        }
+
+    def _test_frame_processing(self, video_path, settings, status_callback):
+        status_callback("اختبار معالجة الإطارات...")
+
+        try:
+            cap = cv2.VideoCapture(video_path)
+            frames = []
+
+            
+            for i in range(10):
+                ret, frame = cap.read()
+                if ret:
+                    frames.append(frame)
+                else:
+                    break
+            cap.release()
+
+            if not frames:
+                return {'error': 'لا يمكن قراءة الإطارات'}
+
+            
+            start_time = time.time()
+            memory_manager = MemoryManager()
+            frame_processor = FrameProcessor(memory_manager)
+
+            original_height, original_width = frames[0].shape[:2]
+            new_width = original_width - settings.get('crop_left', 0) - settings.get('crop_right', 0)
+            new_height = original_height - settings.get('crop_top', 0) - settings.get('crop_bottom', 0)
+
+            processed_frames = frame_processor.process_frame_batch_optimized(
+                frames, settings, new_width, new_height, original_width, original_height
+            )
+
+            sequential_time = time.time() - start_time
+
+            return {
+                'frames_processed': len(processed_frames),
+                'sequential_time': sequential_time,
+                'fps_processing': len(frames) / sequential_time if sequential_time > 0 else 0,
+                'memory_usage_mb': memory_manager.get_available_memory_gb() * 1024
+            }
+
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _test_memory_usage(self, video_path, settings, status_callback):
+        status_callback("اختبار استخدام الذاكرة...")
+
+        memory_before = psutil.virtual_memory()
+
+        try:
+            
+            cap = cv2.VideoCapture(video_path)
+            frames = []
+
+            for i in range(50):  
+                ret, frame = cap.read()
+                if ret:
+                    frames.append(frame)
+                else:
+                    break
+            cap.release()
+
+            memory_after_load = psutil.virtual_memory()
+
+            
+            memory_manager = MemoryManager()
+            frame_processor = FrameProcessor(memory_manager)
+
+            if frames:
+                original_height, original_width = frames[0].shape[:2]
+                new_width = original_width - settings.get('crop_left', 0) - settings.get('crop_right', 0)
+                new_height = original_height - settings.get('crop_top', 0) - settings.get('crop_bottom', 0)
+
+                processed_frames = frame_processor.process_frame_batch_optimized(
+                    frames, settings, new_width, new_height, original_width, original_height
+                )
+
+            memory_after_process = psutil.virtual_memory()
+
+            
+            del frames
+            if 'processed_frames' in locals():
+                del processed_frames
+            memory_manager.cleanup_memory(force=True)
+
+            memory_after_cleanup = psutil.virtual_memory()
+
+            return {
+                'memory_before_mb': memory_before.used / (1024**2),
+                'memory_after_load_mb': memory_after_load.used / (1024**2),
+                'memory_after_process_mb': memory_after_process.used / (1024**2),
+                'memory_after_cleanup_mb': memory_after_cleanup.used / (1024**2),
+                'peak_usage_mb': (memory_after_process.used - memory_before.used) / (1024**2),
+                'cleanup_efficiency': (memory_after_process.used - memory_after_cleanup.used) / (1024**2)
+            }
+
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _test_parallel_performance(self, video_path, settings, status_callback):
+        status_callback("اختبار الأداء المتوازي...")
+
+        try:
+            
+            cap = cv2.VideoCapture(video_path)
+            frames = []
+
+            for i in range(20):  
+                ret, frame = cap.read()
+                if ret:
+                    frames.append(frame)
+                else:
+                    break
+            cap.release()
+
+            if not frames:
+                return {'error': 'لا يمكن قراءة الإطارات'}
+
+            original_height, original_width = frames[0].shape[:2]
+            new_width = original_width - settings.get('crop_left', 0) - settings.get('crop_right', 0)
+            new_height = original_height - settings.get('crop_top', 0) - settings.get('crop_bottom', 0)
+
+            
+            start_time = time.time()
+            memory_manager = MemoryManager()
+            frame_processor = FrameProcessor(memory_manager)
+
+            sequential_result = frame_processor.process_frame_batch_optimized(
+                frames.copy(), settings, new_width, new_height, original_width, original_height
+            )
+            sequential_time = time.time() - start_time
+
+            
+            start_time = time.time()
+            parallel_result = _process_frames_parallel_optimized(
+                frames.copy(), settings, new_width, new_height,
+                original_width, original_height, None,
+                min(4, multiprocessing.cpu_count()), frame_processor
+            )
+            parallel_time = time.time() - start_time
+
+            speedup = sequential_time / parallel_time if parallel_time > 0 else 0
+
+            return {
+                'sequential_time': sequential_time,
+                'parallel_time': parallel_time,
+                'speedup_factor': speedup,
+                'efficiency': speedup / min(4, multiprocessing.cpu_count()),
+                'frames_tested': len(frames)
+            }
+
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _save_test_results(self, results):
+        try:
+            results_dir = os.path.join(base_path, "performance_tests")
+            os.makedirs(results_dir, exist_ok=True)
+
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = f"performance_test_{timestamp}.json"
+            filepath = os.path.join(results_dir, filename)
+
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2, ensure_ascii=False, default=str)
+
+        except Exception as e:
+            print(f"خطأ في حفظ نتائج الاختبار: {e}")
+
+    def generate_performance_report(self):
+        if not self.test_results:
+            return "لا توجد نتائج اختبار متاحة"
+
+        latest_result = self.test_results[-1]
+
+        report = f"""
+تقرير الأداء الشامل
+==================
+
+معلومات النظام:
+- عدد أنوية المعالج: {latest_result['system_info']['cpu_count']}
+- إجمالي الذاكرة: {latest_result['system_info']['memory_total_gb']:.1f} GB
+- المنصة: {latest_result['system_info']['platform']}
+
+نتائج الاختبارات:
+
+        
+        if 'frame_processing' in latest_result['tests']:
+            fp = latest_result['tests']['frame_processing']
+            if 'error' not in fp:
+                report += f"""
+معالجة الإطارات:
+- الإطارات المعالجة: {fp.get('frames_processed', 0)}
+- سرعة المعالجة: {fp.get('fps_processing', 0):.1f} إطار/ثانية
+- وقت المعالجة: {fp.get('sequential_time', 0):.2f} ثانية
+
+        
+        if 'parallel_performance' in latest_result['tests']:
+            pp = latest_result['tests']['parallel_performance']
+            if 'error' not in pp:
+                report += f"""
+الأداء المتوازي:
+- تسريع المعالجة: {pp.get('speedup_factor', 0):.2f}x
+- الكفاءة: {pp.get('efficiency', 0):.2f}
+- الوقت التسلسلي: {pp.get('sequential_time', 0):.2f} ثانية
+- الوقت المتوازي: {pp.get('parallel_time', 0):.2f} ثانية
+    memory_manager = MemoryManager()
+    return memory_manager.get_optimal_batch_size(frame_count)
+
+class FrameProcessor:
+
+    def __init__(self, memory_manager):
+        self.memory_manager = memory_manager
+        self.processed_count = 0
+
+    def process_frame_batch_optimized(self, frames, settings, new_width, new_height,
+                                    original_width, original_height, overlays=None):
+        processed_frames = []
+
+        try:
+            for i, frame in enumerate(frames):
+                
+                if self.processed_count % self.memory_manager.cleanup_interval == 0:
+                    self.memory_manager.cleanup_memory()
+
+                
+                processed_frame = self._process_single_frame(
+                    frame, settings, new_width, new_height,
+                    original_width, original_height, overlays
+                )
+
+                if processed_frame is not None:
+                    processed_frames.append(processed_frame)
+
+                self.processed_count += 1
+
+                
+                del frame
+
+        except Exception as e:
+            print(f"خطأ في معالجة دفعة الإطارات: {e}")
+
+        return processed_frames
+
+    def _process_single_frame(self, frame, settings, new_width, new_height,
+                            original_width, original_height, overlays):
+        try:
+            
+            cropped = frame[
+                settings['crop_top']:original_height - settings['crop_bottom'],
+                settings['crop_left']:original_width - settings['crop_right']
+            ]
+
+            
+            mirrored = cv2.flip(cropped, 1) if settings.get('mirror_enabled', True) else cropped
+
+            
+            final_frame = cv2.convertScaleAbs(
+                mirrored,
+                alpha=settings['contrast'],
+                beta=(settings['brightness'] - 1) * 100
+            )
+
+            
+            if overlays:
+                final_frame = self._apply_overlays(final_frame, overlays, new_width, new_height)
+
+            
+            final_frame = self._apply_x_effect(final_frame, settings, new_width, new_height)
+
+            return final_frame
+
+        except Exception as e:
+            print(f"خطأ في معالجة الإطار: {e}")
+            return None
+
+    def _apply_overlays(self, frame, overlays, new_width, new_height):
+        for overlay in overlays:
+            try:
+                o_type = overlay.get('type')
+                x, y, w, h = overlay['x'], overlay['y'], overlay['w'], overlay['h']
+
+                if w <= 0 or h <= 0:
+                    continue
+
+                if o_type == 'logo' and 'data' in overlay:
+                    frame = self._apply_logo_overlay(frame, overlay, x, y, w, h, new_width, new_height)
+                elif o_type == 'blur':
+                    frame = self._apply_blur_overlay(frame, x, y, w, h)
+                elif o_type == 'pixelate':
+                    frame = self._apply_pixelate_overlay(frame, x, y, w, h)
+                elif o_type in ['rect', 'circle']:
+                    frame = self._apply_shape_overlay(frame, overlay, x, y, w, h)
+
+            except Exception as e:
+                print(f"خطأ في تطبيق العنصر {o_type}: {e}")
+
+        return frame
+
+    def _apply_logo_overlay(self, frame, overlay, x, y, w, h, new_width, new_height):
+        logo_data = overlay['data']
+        oh, ow = logo_data.shape[:2]
+
+        y1, x1 = max(0, y), max(0, x)
+        y2, x2 = min(new_height, y + oh), min(new_width, x + ow)
+
+        if y1 < y2 and x1 < x2:
+            logo_y1, logo_x1 = y1 - y, x1 - x
+            logo_y2, logo_x2 = logo_y1 + (y2 - y1), logo_x1 + (x2 - x1)
+
+            if logo_data.shape[2] == 4:  
+                alpha_s = logo_data[logo_y1:logo_y2, logo_x1:logo_x2, 3] / 255.0
+                alpha_l = 1.0 - alpha_s
+                for c in range(3):
+                    frame[y1:y2, x1:x2, c] = (
+                        alpha_s * logo_data[logo_y1:logo_y2, logo_x1:logo_x2, c] +
+                        alpha_l * frame[y1:y2, x1:x2, c]
+                    )
+            else:
+                frame[y1:y2, x1:x2] = logo_data[logo_y1:logo_y2, logo_x1:logo_x2]
+
+        return frame
+
+    def _apply_blur_overlay(self, frame, x, y, w, h):
+        roi = frame[y:y+h, x:x+w]
+        ksize = (max(1, w // 4) | 1, max(1, h // 4) | 1)
+        frame[y:y+h, x:x+w] = cv2.GaussianBlur(roi, ksize, 0)
+        return frame
+
+    def _apply_pixelate_overlay(self, frame, x, y, w, h):
+        pixel_size = 20
+        roi = frame[y:y+h, x:x+w]
+
+        if roi.size == 0:
+            return frame
+
+        
+        mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+        cv2.circle(mask, (w//2, h//2), w//2, 255, -1)
+
+        
+        small_roi = cv2.resize(roi, (max(1, w // pixel_size), max(1, h // pixel_size)),
+                              interpolation=cv2.INTER_LINEAR)
+        pixelated_roi = cv2.resize(small_roi, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        
+        frame[y:y+h, x:x+w] = np.where(mask[..., None].astype(bool), pixelated_roi, roi)
+        return frame
+
+    def _apply_shape_overlay(self, frame, overlay, x, y, w, h):
+        color_hex = overlay.get('color', '#FFFF00').lstrip('#')
+        color_bgr = tuple(int(color_hex[i:i+2], 16) for i in (4, 2, 0))
+        thickness = overlay.get('thickness', 2)
+
+        if overlay['type'] == 'rect':
+            cv2.rectangle(frame, (x, y), (x+w, y+h), color_bgr, thickness)
+        else:  
+            cv2.ellipse(frame, (x + w//2, y + h//2), (w//2, h//2), 0, 0, 360, color_bgr, thickness)
+
+        return frame
+
+    def _apply_x_effect(self, frame, settings, new_width, new_height):
+        x_mask = np.zeros((new_height, new_width), dtype=np.uint8)
+        cv2.line(x_mask, (0, 0), (new_width, new_height), 255, int(settings['x_thickness']))
+        cv2.line(x_mask, (new_width, 0), (0, new_height), 255, int(settings['x_thickness']))
+        frame[x_mask > 0] = np.clip(
+            frame[x_mask > 0].astype(np.int16) + int(settings['x_lighten']),
+            0, 255
+        ).astype(np.uint8)
+        return frame
 
 def process_frame_in_shared_memory(args):
-    
     shm_name, frame_idx, shape, dtype, settings, new_width, new_height, original_width, original_height, overlays_to_apply = args
 
     try:
-        
         existing_shm = shared_memory.SharedMemory(name=shm_name)
-        
-        
         shm_np_array = np.ndarray(shape, dtype=dtype, buffer=existing_shm.buf)
 
         
+        memory_manager = MemoryManager()
+        frame_processor = FrameProcessor(memory_manager)
+
         
         frame_to_process = shm_np_array[frame_idx].copy()
-        
-        
-        processed_frame_list = process_frame_batch(
-            [frame_to_process], settings, new_width, new_height, original_width, original_height, overlays_to_apply
+        processed_frame = frame_processor._process_single_frame(
+            frame_to_process, settings, new_width, new_height,
+            original_width, original_height, overlays_to_apply
         )
-        
-        
-        if processed_frame_list:
-            shm_np_array[frame_idx] = processed_frame_list[0]
+
+        if processed_frame is not None:
+            shm_np_array[frame_idx] = processed_frame
 
     except Exception as e:
-        print(f"Error in worker process for frame {frame_idx}: {e}")
+        print(f"خطأ في معالجة الإطار {frame_idx}: {e}")
     finally:
-        
         if 'existing_shm' in locals():
             existing_shm.close()
+
+    return frame_idx
+
+def _process_frames_parallel_optimized(frames, settings, new_width, new_height,
+                                      original_width, original_height, overlays,
+                                      max_workers, frame_processor):
+    try:
+        
+        chunk_size = max(1, len(frames) // max_workers)
+        frame_chunks = [frames[i:i + chunk_size] for i in range(0, len(frames), chunk_size)]
+
+        processed_frames = []
+
+        
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="frame_proc") as executor:
             
-    return frame_idx 
+            futures = []
+            for chunk in frame_chunks:
+                future = executor.submit(
+                    frame_processor.process_frame_batch_optimized,
+                    chunk, settings, new_width, new_height,
+                    original_width, original_height, overlays
+                )
+                futures.append(future)
+
+            
+            for future in futures:
+                try:
+                    chunk_result = future.result(timeout=30)  
+                    processed_frames.extend(chunk_result)
+                except Exception as e:
+                    print(f"خطأ في معالجة مجموعة الإطارات: {e}")
+
+        return processed_frames
+
+    except Exception as e:
+        print(f"خطأ في المعالجة المتوازية: {e}")
+        
+        return frame_processor.process_frame_batch_optimized(
+            frames, settings, new_width, new_height,
+            original_width, original_height, overlays
+        )
 
 def process_video_chunk(chunk_settings, cancel_event, status_callback=None, status_queue=None):
     def send_status(msg, progress=None):
@@ -307,37 +2334,101 @@ def process_video_chunk(chunk_settings, cancel_event, status_callback=None, stat
         os.close(temp_video_fd)
         out = cv2.VideoWriter(temp_video_file_for_chunk, cv2.VideoWriter_fourcc(*'mp4v'), original_fps, (new_width, new_height))
         
-        batch_size = get_optimal_batch_size(frame_count)
-        processed_count = 0
-        cpu_cores = multiprocessing.cpu_count()
         
-        while processed_count < frame_count:
-            
-            if cancel_event.is_set():
-                send_status(f"الجزء {chunk_index + 1}: تم طلب الإلغاء، إيقاف معالجة الإطارات.")
-                break 
+        memory_manager = MemoryManager()
+        resource_monitor = ResourceMonitor()
+        frame_processor = FrameProcessor(memory_manager)
+
+        
+        base_batch_size = memory_manager.get_optimal_batch_size(frame_count)
+        cpu_cores = multiprocessing.cpu_count()
+
+        processed_count = 0
+        frames_buffer = deque()  
+
+        
+        read_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="frame_reader")
+
+        def read_frames_async(cap, batch_size, start_frame):
             frames = []
-            for _ in range(batch_size):
+            for i in range(batch_size):
                 ret, frame = cap.read()
-                if not ret: break
+                if not ret:
+                    break
                 frames.append(frame)
-            if not frames: break
-            if chunk_settings.get('frame_parallel', False):
-                frames_bytes = [pickle.dumps(f) for f in frames]
-                func = partial(process_one_frame_pickled,
-                               chunk_settings=chunk_settings,
-                               new_width=new_width,
-                               new_height=new_height,
-                               original_width=original_width,
-                               original_height=original_height,
-                               overlays_to_apply=overlays_to_apply)
-                with ProcessPoolExecutor(max_workers=cpu_cores) as executor:
-                    processed_batch = list(executor.map(func, frames_bytes))
-            else:
-                processed_batch = process_frame_batch(frames, chunk_settings, new_width, new_height, original_width, original_height, overlays_to_apply)
-            for p_frame in processed_batch: out.write(p_frame)
-            processed_count += len(frames)
-            send_status(f"الجزء {chunk_index + 1}: تمت معالجة {processed_count}/{frame_count} إطار", progress=(processed_count / frame_count) * 100)
+            return frames
+
+        try:
+            while processed_count < frame_count:
+                if cancel_event.is_set():
+                    send_status(f"الجزء {chunk_index + 1}: تم طلب الإلغاء، إيقاف معالجة الإطارات.")
+                    break
+
+                
+                adaptive_settings = resource_monitor.get_adaptive_settings(base_batch_size, cpu_cores)
+                current_batch_size = adaptive_settings['batch_size']
+                current_workers = adaptive_settings['workers']
+
+                
+                if not frames_buffer:
+                    frames = []
+                    for _ in range(current_batch_size):
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        frames.append(frame)
+                    if not frames:
+                        break
+                else:
+                    
+                    frames = []
+                    for _ in range(min(current_batch_size, len(frames_buffer))):
+                        if frames_buffer:
+                            frames.append(frames_buffer.popleft())
+
+                if not frames:
+                    break
+
+                
+                if chunk_settings.get('frame_parallel', False) and len(frames) > 1:
+                    
+                    processed_batch = self._process_frames_parallel_optimized(
+                        frames, chunk_settings, new_width, new_height,
+                        original_width, original_height, overlays_to_apply,
+                        current_workers, frame_processor
+                    )
+                else:
+                    
+                    processed_batch = frame_processor.process_frame_batch_optimized(
+                        frames, chunk_settings, new_width, new_height,
+                        original_width, original_height, overlays_to_apply
+                    )
+
+                
+                for p_frame in processed_batch:
+                    if p_frame is not None:
+                        out.write(p_frame)
+
+                processed_count += len(frames)
+                progress = (processed_count / frame_count) * 100
+
+                
+                stats = adaptive_settings['stats']
+                send_status(
+                    f"الجزء {chunk_index + 1}: تمت معالجة {processed_count}/{frame_count} إطار "
+                    f"(CPU: {stats['cpu_percent']:.1f}%, RAM: {stats['memory_percent']:.1f}%)",
+                    progress=progress
+                )
+
+                
+                if processed_count % (current_batch_size * 5) == 0:
+                    memory_manager.cleanup_memory()
+
+                
+                del frames, processed_batch
+
+        finally:
+            read_executor.shutdown(wait=False)
         cap.release()
         out.release()
         if cancel_event.is_set():
@@ -408,9 +2499,46 @@ def process_video_core(settings, status_callback, cancel_event):
     created_temp_files = []
     start_time = time.time()
     shm = None
-    final_output_path = None 
+    final_output_path = None
+
+    
+    adaptive_controller = AdaptiveProcessingController()
+    long_video_processor = LongVideoProcessor(adaptive_controller)
 
     try:
+        
+        status_callback("تحليل الفيديو وتحديد استراتيجية المعالجة المثلى...")
+        strategy = adaptive_controller.get_processing_strategy(original_input_path, settings)
+
+        
+        status_callback(f"الاستراتيجية المختارة: {long_video_processor._format_strategy(strategy)}")
+
+        
+        time_estimate = adaptive_controller.estimate_processing_time(original_input_path, settings)
+        if time_estimate['estimated_hours'] > 0:
+            status_callback(f"الوقت المقدر: {time_estimate['estimated_hours']:.1f} ساعة")
+
+        
+        resume_job_id = settings.get('resume_job_id')
+        if resume_job_id:
+            status_callback(f"محاولة استئناف المهمة: {resume_job_id}")
+
+        
+        if strategy['estimated_duration_minutes'] > 30 or strategy['estimated_size_gb'] > 2:
+            
+            status_callback("استخدام معالج الفيديوهات الطويلة...")
+            success = long_video_processor.process_long_video(
+                original_input_path, original_output_path, settings,
+                status_callback, cancel_event, resume_job_id
+            )
+
+            if success:
+                elapsed_time = time.time() - start_time
+                return (True, original_output_path, elapsed_time)
+            else:
+                return (False, None, 0)
+
+        
         status_callback("إنشاء نسخة مؤقتة آمنة من ملف الإدخال...")
         try:
             _, ext = os.path.splitext(original_input_path)
@@ -596,6 +2724,24 @@ def process_video_core(settings, status_callback, cancel_event):
                 return (False, None, 0)
 
         elapsed_time = time.time() - start_time
+
+        
+        try:
+            if hasattr(adaptive_controller, 'save_performance_data'):
+                
+                time_estimate = adaptive_controller.estimate_processing_time(original_input_path, settings)
+                estimated_minutes = time_estimate.get('estimated_minutes', 0)
+
+                
+                video_info = time_estimate.get('factors', {})
+
+                
+                adaptive_controller.save_performance_data(
+                    elapsed_time, estimated_minutes, video_info, settings
+                )
+        except Exception as e:
+            print(f"خطأ في حفظ بيانات الأداء: {e}")
+
         return (True, final_output_path, elapsed_time)
 
     except Exception as e:
@@ -614,22 +2760,80 @@ def process_video_core(settings, status_callback, cancel_event):
 
 
 class App(tk.Tk):
+
     
-    BG_COLOR = "#2E2E2E"
-    FRAME_COLOR = "#3C3C3C"
-    TEXT_COLOR = "#F0F0F0"
-    ENTRY_BG_COLOR = "#4A4A4A"
-    BUTTON_COLOR = "#007ACC"
-    BUTTON_ACTIVE_COLOR = "#005F9E"
-    VIEW_BUTTON_BG = "#4A4A4A"
-    TOOLTIP_BG = "#FFFFE0"
-    TOOLTIP_FG = "#000000"
+    BG_COLOR = "#1E1E1E"           
+    FRAME_COLOR = "#2D2D2D"        
+    SECONDARY_FRAME_COLOR = "#3A3A3A"  
+    TEXT_COLOR = "#FFFFFF"         
+    SECONDARY_TEXT_COLOR = "#B0B0B0"   
+    ENTRY_BG_COLOR = "#404040"     
+    BUTTON_COLOR = "#0078D4"       
+    BUTTON_ACTIVE_COLOR = "#106EBE"  
+    SUCCESS_COLOR = "#107C10"      
+    WARNING_COLOR = "#FF8C00"      
+    ERROR_COLOR = "#D13438"        
+    VIEW_BUTTON_BG = "#404040"
+    VIEW_BUTTON_ACTIVE = "#505050"
+    TOOLTIP_BG = "#2D2D2D"
+    TOOLTIP_FG = "#FFFFFF"
+    BORDER_COLOR = "#555555"       
+    ACCENT_COLOR = "#0078D4"       
 
     def __init__(self):
         super().__init__()
-        self.title("محرر الفيديو")
-        self.geometry("900x800") 
+
+        
+        try:
+            configure_arabic_support()
+
+            
+            self.arabic_font = get_arabic_font()
+        except Exception as e:
+            print(f"خطأ في تكوين دعم العربية: {e}")
+            self.arabic_font = "Arial"
+
+        
+        title_text = "محرر الفيديو المتقدم"
+        ArabicText.set_title(self, title_text)
+        self.geometry("950x750")
+        self.minsize(800, 600)
         self.configure(bg=self.BG_COLOR)
+
+        
+        try:
+            
+            if platform.system() == "Windows":
+                self.iconbitmap(default="")  
+
+            
+            if platform.system() == "Windows":
+                try:
+                    import ctypes
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        ctypes.windll.user32.GetParent(self.winfo_id()),
+                        35, ctypes.byref(ctypes.c_int(0x1E1E1E)), ctypes.sizeof(ctypes.c_int)
+                    )
+                except:
+                    pass
+        except:
+            pass
+
+        
+        if platform.system() == "Linux":
+            try:
+                self.option_add("*Text.direction", "rtl")
+                self.option_add("*Entry.justify", "right")
+                self.option_add("*Label.justify", "right")
+            except:
+                pass
+
+        
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        
+        self.is_maximized = False
+        self.last_geometry = "950x750"
 
         import threading
         self.cancel_event = threading.Event()
@@ -642,51 +2846,102 @@ class App(tk.Tk):
             "logo_scale": 0.1, "wave_chunk_duration": 1200, "wave_fade": 200,
             "x_thickness": 50, "x_lighten": 50,
             "mirror_enabled": True,
-            "processing_mode": "parallel", 
-            "enable_chunking": False, "chunk_size_seconds": 60, 
-            "merge_chunks_after_processing": True, "crossfade_duration": 1, 
-            "parallel_level": "\u062a\u0641\u0631\u0639 \u0639\u0644\u0649 \u0645\u0633\u062a\u0648\u0649 \u0627\u0644\u0625\u0637\u0627\u0631\u0627\u062a \u062f\u0627\u062e\u0644 \u0627\u0644\u062c\u0632\u0621 (Frames in Chunk)",
+            "processing_mode": "parallel",
             "compression_enabled": False,
-            "quality_preset": "1080p (Full HD)" 
+            "quality_preset": "1080p (Full HD)"
         }
         self.settings_file = os.path.join(base_path, "settings.json")
         self.processed_chunk_files = [] 
         
-        
+
         self.mirror_enabled_var = tk.BooleanVar(value=self.default_values['mirror_enabled'])
         self.processing_mode_var = tk.StringVar(value=self.default_values["processing_mode"])
-        self.parallel_level_var = tk.StringVar(value=self.default_values["parallel_level"])
         self.compression_enabled_var = tk.BooleanVar(value=self.default_values["compression_enabled"])
-        self.enable_chunking_var = tk.BooleanVar(value=self.default_values["enable_chunking"])
-        self.chunk_size_seconds_var = tk.StringVar(value=str(self.default_values["chunk_size_seconds"]))
-        self.merge_chunks_var = tk.BooleanVar(value=self.default_values["merge_chunks_after_processing"])
-        self.crossfade_duration_var = tk.StringVar(value=str(self.default_values["crossfade_duration"]))
-        self.quality_preset_var = tk.StringVar(value=self.default_values["quality_preset"]) 
+        self.quality_preset_var = tk.StringVar(value=self.default_values["quality_preset"])
         
         self.setup_styles()
         self.create_widgets()
-        self.load_settings() 
+        self.load_settings()
         self.show_view('proc')
+
+        
+        self.after(100, lambda: apply_arabic_fixes_to_app(self))
+
+    def on_closing(self):
+        try:
+            
+            self.save_settings()
+
+            
+            if hasattr(self, 'cancel_event') and self.cancel_event:
+                self.cancel_event.set()
+
+            
+            temp_dir = os.path.join(base_path, "temp_videos")
+            if os.path.exists(temp_dir):
+                try:
+                    import shutil
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                except:
+                    pass
+
+            
+            self.destroy()
+
+        except Exception as e:
+            print(f"خطأ أثناء إغلاق التطبيق: {e}")
+            self.destroy()
 
     def setup_styles(self):
         style = ttk.Style(self)
-        self.option_add("*Font", "SegoeUI 10")
+
         
-        style.theme_use('clam')
-        style.configure(".", background=self.BG_COLOR, foreground=self.TEXT_COLOR, bordercolor=self.FRAME_COLOR)
-        style.configure("TFrame", background=self.FRAME_COLOR)
-        style.configure("TLabel", background=self.FRAME_COLOR, foreground=self.TEXT_COLOR, padding=5)
-        style.configure("TButton", background=self.BUTTON_COLOR, foreground="white", padding=8, relief="flat", font=("SegoeUI", 10, "bold"), borderwidth=0)
-        style.map("TButton", background=[('active', self.BUTTON_ACTIVE_COLOR)], relief=[('pressed', 'sunken')])
-        style.configure("TEntry", fieldbackground=self.ENTRY_BG_COLOR, foreground=self.TEXT_COLOR, insertcolor=self.TEXT_COLOR, borderwidth=1, relief="solid")
-        style.configure("TLabelFrame", background=self.FRAME_COLOR)
-        style.configure("TLabelFrame.Label", background=self.FRAME_COLOR, foreground=self.TEXT_COLOR, font=("SegoeUI", 11, "bold"))
-        style.configure("Vertical.TScrollbar", background=self.BG_COLOR, troughcolor=self.FRAME_COLOR, arrowcolor=self.TEXT_COLOR)
-        style.configure("TCheckbutton", background=self.FRAME_COLOR, foreground=self.TEXT_COLOR)
-        style.map("TCheckbutton", background=[('active', self.FRAME_COLOR)], indicatorcolor=[('selected', self.BUTTON_COLOR), ('!selected', self.ENTRY_BG_COLOR)])
-        style.configure("ViewToggle.TButton", background=self.VIEW_BUTTON_BG, foreground="white", font=("SegoeUI", 10, "normal"))
-        style.map("ViewToggle.TButton", background=[('active', self.BUTTON_COLOR)])
-        style.configure("Active.TButton", background=self.BUTTON_COLOR, foreground="white")
+        try:
+            style.theme_use('clam')
+        except Exception as e:
+            print(f"خطأ في تعيين theme: {e}")
+            try:
+                style.theme_use('default')
+            except:
+                pass
+
+        
+        try:
+            style.configure(".",
+                           background=self.BG_COLOR,
+                           foreground=self.TEXT_COLOR)
+
+            style.configure("TFrame",
+                           background=self.FRAME_COLOR)
+
+            style.configure("TLabel",
+                           background=self.FRAME_COLOR,
+                           foreground=self.TEXT_COLOR)
+
+            style.configure("TButton",
+                           background=self.BUTTON_COLOR,
+                           foreground="white")
+
+        except Exception as e:
+            print(f"خطأ في تكوين الأنماط: {e}")
+            
+            pass
+
+        
+        try:
+            style.configure("TLabelFrame",
+                           background=self.FRAME_COLOR)
+            style.configure("TEntry",
+                           fieldbackground=self.ENTRY_BG_COLOR,
+                           foreground=self.TEXT_COLOR)
+        except Exception as e:
+            print(f"خطأ في الإعدادات الإضافية: {e}")
+
+        
+
+
+
+
 
     def create_widgets(self):
         paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
@@ -718,9 +2973,9 @@ class App(tk.Tk):
         self.input_path_var = tk.StringVar(value="لم يتم اختيار ملف")
         self.output_path_var = tk.StringVar(value="لم يتم اختيار مكان الحفظ")
         ttk.Button(file_frame, text="اختر فيديو للمعالجة", command=self.select_input).grid(row=0, column=0, sticky="ew", padx=5, pady=5)
-        ttk.Label(file_frame, textvariable=self.input_path_var, anchor="w").grid(row=0, column=1, sticky="ew", padx=5)
+        ttk.Label(file_frame, textvariable=self.input_path_var).grid(row=0, column=1, sticky="ew", padx=5)
         ttk.Button(file_frame, text="اختر مكان حفظ الناتج", command=self.select_output).grid(row=1, column=0, sticky="ew", padx=5, pady=5)
-        ttk.Label(file_frame, textvariable=self.output_path_var, anchor="w").grid(row=1, column=1, sticky="ew", padx=5)
+        ttk.Label(file_frame, textvariable=self.output_path_var).grid(row=1, column=1, sticky="ew", padx=5)
         file_frame.columnconfigure(1, weight=1)
 
         
@@ -736,10 +2991,10 @@ class App(tk.Tk):
         view_buttons_frame.pack(fill=tk.X, padx=5, pady=(10, 0))
         self.proc_opts_button = ttk.Button(view_buttons_frame, text="خيارات المعالجة", command=lambda: self.show_view('proc'), style="ViewToggle.TButton")
         self.proc_opts_button.pack(side=tk.LEFT, padx=(0, 2), fill=tk.X, expand=True)
-        self.chunking_opts_button = ttk.Button(view_buttons_frame, text="تقسيم الفيديو", command=lambda: self.show_view('chunk'), style="ViewToggle.TButton")
-        self.chunking_opts_button.pack(side=tk.LEFT, padx=(2, 2), fill=tk.X, expand=True)
         self.comp_opts_button = ttk.Button(view_buttons_frame, text="ضغط الفيديو", command=lambda: self.show_view('comp'), style="ViewToggle.TButton")
-        self.comp_opts_button.pack(side=tk.LEFT, padx=(2, 0), fill=tk.X, expand=True)
+        self.comp_opts_button.pack(side=tk.LEFT, padx=(2, 2), fill=tk.X, expand=True)
+        self.perf_opts_button = ttk.Button(view_buttons_frame, text="مراقبة الأداء", command=lambda: self.show_view('perf'), style="ViewToggle.TButton")
+        self.perf_opts_button.pack(side=tk.LEFT, padx=(2, 0), fill=tk.X, expand=True)
 
         
         self.options_views_container = ttk.Frame(left_panel)
@@ -778,360 +3033,329 @@ class App(tk.Tk):
         proc_mode_frame = ttk.Frame(proc_main_frame, style="TFrame")
         proc_mode_frame.grid(row=len(options) + 1, column=1, sticky='ew')
         
-        
-        ttk.Radiobutton(proc_mode_frame, text="تفرعي", variable=self.processing_mode_var, value="parallel", command=self.toggle_chunking_widgets_state).pack(side=tk.LEFT, expand=True)
-        ttk.Radiobutton(proc_mode_frame, text="تسلسلي", variable=self.processing_mode_var, value="sequential", command=self.toggle_chunking_widgets_state).pack(side=tk.LEFT, expand=True)
-        
 
-        proc_main_frame.columnconfigure(1, weight=1)
+        ttk.Radiobutton(proc_mode_frame, text="تفرعي (موصى)", variable=self.processing_mode_var, value="parallel").pack(side=tk.LEFT, expand=True)
+        ttk.Radiobutton(proc_mode_frame, text="تسلسلي", variable=self.processing_mode_var, value="sequential").pack(side=tk.LEFT, expand=True)
 
         
-        self.chunking_options_view = ttk.Frame(self.options_views_container, style="TFrame")
-        chunk_main_frame = ttk.LabelFrame(self.chunking_options_view, text="إعدادات تقسيم الفيديو", padding=10)
-        chunk_main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        chunk_check = ttk.Checkbutton(chunk_main_frame, text="تفعيل تقسيم الفيديو إلى أجزاء", variable=self.enable_chunking_var, command=self.toggle_chunking_widgets_state)
-        chunk_check.grid(row=0, column=0, columnspan=2, sticky='w', padx=5, pady=5)
-        
-        ttk.Label(chunk_main_frame, text="حجم الجزء (بالدقائق):").grid(row=1, column=0, sticky='w', padx=5, pady=5)
-        self.chunk_size_entry = ttk.Entry(chunk_main_frame, textvariable=self.chunk_size_seconds_var) 
-        self.chunk_size_entry.grid(row=1, column=1, sticky='ew', padx=5)
-        
-        self.merge_chunks_check = ttk.Checkbutton(chunk_main_frame, text="دمج الأجزاء بعد المعالجة", variable=self.merge_chunks_var, command=self.toggle_crossfade_widget_state)
-        self.merge_chunks_check.grid(row=2, column=0, columnspan=2, sticky='w', padx=5, pady=5)
-        
-        ttk.Label(chunk_main_frame, text="مدة التلاشي المتداخل (بالثواني):").grid(row=3, column=0, sticky='w', padx=5, pady=5)
-        self.crossfade_entry = ttk.Entry(chunk_main_frame, textvariable=self.crossfade_duration_var)
-        self.crossfade_entry.grid(row=3, column=1, sticky='ew', padx=5)
+        smart_info_frame = ttk.LabelFrame(proc_main_frame, text="التقسيم الذكي التلقائي", padding=5)
+        smart_info_frame.grid(row=len(options) + 2, column=0, columnspan=2, sticky='ew', padx=5, pady=10)
 
+        info_text = """
+🤖 النظام يقوم تلقائياً بـ:
+• تحليل حجم ومدة الفيديو
+• اختيار أفضل استراتيجية معالجة
+• تقسيم الفيديوهات الطويلة (>30 دقيقة) تلقائياً
+• تحسين استخدام الموارد حسب النظام
+• حفظ نقاط تحكم للاستئناف عند الحاجة
+        self.update_system_info()
         
-        ttk.Label(chunk_main_frame, text="مستوى التفرع:").grid(row=4, column=0, sticky='w', padx=5, pady=5)
-        self.parallel_level_combo = ttk.Combobox(chunk_main_frame, textvariable=self.parallel_level_var, values=["تفرع على مستوى الأجزاء (Chunks)", "تفرع على مستوى الإطارات داخل الجزء (Frames in Chunk)"], state="readonly")
-        self.parallel_level_combo.grid(row=4, column=1, sticky='ew', padx=5, pady=5)
-        
-        
-        self.manual_merge_button = ttk.Button(chunk_main_frame, text="دمج أجزاء يدوياً...", command=self.manually_merge_chunks)
-        self.manual_merge_button.grid(row=5, column=0, columnspan=2, sticky='ew', padx=5, pady=10)
-        chunk_main_frame.columnconfigure(1, weight=1)
+        self.after(5000, self.start_system_monitoring)
 
-        
-        self.compression_options_view = ttk.Frame(self.options_views_container, style="TFrame")
-        comp_main_frame = ttk.LabelFrame(self.compression_options_view, text="إعدادات ضغط الفيديو", padding=10)
-        comp_main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        self.compression_enabled_var.set(self.default_values['compression_enabled']) 
-        comp_check = ttk.Checkbutton(comp_main_frame, text="تفعيل ضغط الفيديو", variable=self.compression_enabled_var, command=self.toggle_simple_compression_widgets)
-        comp_check.grid(row=0, column=0, columnspan=2, sticky='w', padx=5, pady=10)
-        
-        ttk.Label(comp_main_frame, text="اختر جودة الفيديو:").grid(row=1, column=0, sticky='w', padx=5, pady=5)
-        
-        self.quality_preset_combo = ttk.Combobox(comp_main_frame, textvariable=self.quality_preset_var,
-                                                 values=list(QUALITY_PRESETS.keys()), state='readonly')
-        self.quality_preset_combo.grid(row=1, column=1, sticky='ew', padx=5, pady=5)
-        
-        comp_main_frame.columnconfigure(1, weight=1)
-        
-
-        
-        settings_buttons_frame = ttk.Frame(left_panel, style="TFrame")
-        settings_buttons_frame.pack(fill=tk.X, padx=5, pady=(10, 5), side=tk.BOTTOM)
-        ttk.Button(settings_buttons_frame, text="حفظ الإعدادات", command=self.save_settings).pack(side=tk.LEFT, padx=(0, 2), expand=True, fill=tk.X)
-        ttk.Button(settings_buttons_frame, text="استعادة الافتراضيات", command=self.restore_default_settings).pack(side=tk.LEFT, padx=(2, 0), expand=True, fill=tk.X)
-
-        
-        right_panel = ttk.Frame(paned_window, padding=10, style="TFrame")
-        paned_window.add(right_panel, weight=3) 
-
-        status_frame = ttk.LabelFrame(right_panel, text="الحالة والتحكم", padding=10)
-        status_frame.pack(fill=tk.BOTH, expand=True)
-
-        status_top_frame = ttk.Frame(status_frame, style="TFrame")
-        status_top_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
-        
-        self.process_button = ttk.Button(status_top_frame, text="بدء المعالجة", command=self.start_processing)
-        self.process_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
-
-        self.stop_button = ttk.Button(status_top_frame, text="إيقاف المعالجة", command=self.stop_processing, state=tk.DISABLED)
-        self.stop_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
-
-        self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(status_frame, variable=self.progress_var, maximum=100)
-        self.progress_bar.pack(side=tk.TOP, fill=tk.X, pady=(5, 10))
-
-        status_text_frame = ttk.Frame(status_frame, style="TFrame")
-        status_text_frame.pack(fill=tk.BOTH, expand=True)
-        self.status_text = tk.Text(status_text_frame, state=tk.DISABLED, background=self.ENTRY_BG_COLOR, foreground=self.TEXT_COLOR, relief="solid", borderwidth=1, wrap=tk.WORD, padx=5, pady=5)
-        scrollbar = ttk.Scrollbar(status_text_frame, orient="vertical", command=self.status_text.yview, style="Vertical.TScrollbar")
-        self.status_text['yscrollcommand'] = scrollbar.set
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-    def load_first_video_frame(self):
-        
-        input_path = self.settings.get('input_path')
-        if not input_path or not os.path.exists(input_path):
-            messagebox.showerror("خطأ", "يرجى اختيار ملف فيديو صالح أولاً.")
-            return
-        import cv2
-        from PIL import Image, ImageTk
-        cap = cv2.VideoCapture(input_path)
-        ret, frame = cap.read()
-        cap.release()
-        if not ret:
-            messagebox.showerror("خطأ", "تعذر قراءة أول إطار من الفيديو.")
-            return
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(frame_rgb)
-        resample = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS', Image.BICUBIC)
-        pil_img = pil_img.resize((320, 180), resample)
-        self.video_frame_image = ImageTk.PhotoImage(pil_img)
-        self.video_canvas.create_image(0, 0, anchor='nw', image=self.video_frame_image)
-        
-        if self.logo_canvas_image and self.logo_canvas_id:
-            self.video_canvas.lift(self.logo_canvas_id)
-
-    def select_logo_image(self):
-        from PIL import Image, ImageTk
-        path = filedialog.askopenfilename(title="اختر صورة لوغو", filetypes=[("صور", "*.png;*.jpg;*.jpeg")])
-        if not path:
-            return
-        pil_img = Image.open(path).convert("RGBA")
-        self.logo_pil_image = pil_img
-        
-        logo_resized = pil_img.resize((64, 64), Image.ANTIALIAS)
-        self.logo_canvas_image = ImageTk.PhotoImage(logo_resized)
-        
-        if self.logo_canvas_id:
-            self.video_canvas.delete(self.logo_canvas_id)
-        self.logo_canvas_id = self.video_canvas.create_image(10, 10, anchor='nw', image=self.logo_canvas_image)
-        
-        self.video_canvas.lift(self.logo_canvas_id)
-
-    def select_input(self):
-        path = filedialog.askopenfilename(title="اختر فيديو", filetypes=[("ملفات الفيديو", "*.mp4 *.mov *.avi"), ("كل الملفات", "*.*")])
-        if path:
-            self.input_path_var.set(os.path.basename(path))
-            self.settings['input_path'] = path
-
-    def select_output(self):
-        path = filedialog.asksaveasfilename(title="حفظ باسم", defaultextension=".mp4", filetypes=[("ملف MP4", "*.mp4")])
-        if path:
-            self.output_path_var.set(os.path.basename(path))
-            self.settings['output_path'] = path
-
-    def update_status(self, message, progress=None):
-        self.status_text.config(state=tk.NORMAL)
-        self.status_text.insert(tk.END, message + "\n")
-        self.status_text.see(tk.END)
-        self.status_text.config(state=tk.DISABLED)
-
-        if progress == "indeterminate":
-            self.progress_bar.config(mode='indeterminate')
-            self.progress_bar.start(10) 
-        elif progress is not None:
-            self.progress_bar.stop() 
-            self.progress_bar.config(mode='determinate')
-            self.progress_var.set(progress)
-            if progress >= 100: 
-                self.after(1000, lambda: self.progress_var.set(0))
-        else:
-            
-            self.progress_bar.stop()
-            self.progress_bar.config(mode='determinate')
-        
-        self.update_idletasks() 
-
-    def start_processing(self):
-        if not self.settings.get('input_path') or not self.settings.get('output_path'):
-            messagebox.showerror("خطأ", "الرجاء اختيار ملف الإدخال ومكان الحفظ أولاً.")
-            return
-        
-        try:
-            for name in ["brightness", "contrast", "speed_factor", "logo_scale"]:
-                self.settings[name] = float(self.entries[name].get())
-            
-            for name in ["crop_top", "crop_bottom", "crop_left", "crop_right", 
-                         "wave_chunk_duration", "wave_fade", "x_thickness", "x_lighten"]:
-                
-                self.settings[name] = int(float(self.entries[name].get()))
-        except (ValueError, KeyError) as e:
-            messagebox.showerror("خطأ في الإدخال", f"الرجاء إدخال أرقام صالحة في الخيارات.\nالخيار الذي به مشكلة على الأغلب: {name}")
-            return
-
-        
-        self.settings['mirror_enabled'] = self.mirror_enabled_var.get()
-        self.settings['processing_mode'] = self.processing_mode_var.get()
-        
-        
-        self.settings['enable_chunking'] = self.enable_chunking_var.get()
-        self.settings['chunk_size_seconds'] = float(self.chunk_size_seconds_var.get())
-        self.settings['merge_chunks_after_processing'] = self.merge_chunks_var.get()
-        self.settings['crossfade_duration'] = float(self.crossfade_duration_var.get())
-        self.settings['parallel_level'] = self.parallel_level_var.get()
-
-        
-        self.settings['compression_enabled'] = self.compression_enabled_var.get()
-        self.settings['quality_preset'] = self.quality_preset_var.get()
-        
-        
-        self.cancel_event.clear()
-        self.process_button.config(state=tk.DISABLED)
-        self.stop_button.config(state=tk.NORMAL)
-        
-        self.progress_var.set(0) 
-        self.status_text.config(state=tk.NORMAL)
-        self.status_text.delete(1.0, tk.END)
-        self.update_status(f"تم اختيار وضع المعالجة: {'تفرعي' if self.settings['processing_mode'] == 'parallel' else 'تسلسلي'}")
-        
-        
-        if hasattr(self, 'optimal_temp_dir'):
-            self.settings['temp_dir_path'] = self.optimal_temp_dir
-
-        thread = threading.Thread(target=self.run_processing_thread)
-        thread.daemon = True
-        thread.start()
-
-    def run_processing_thread(self):
-        result = (False, None, 0)
+    def update_system_info(self):
         try:
             
-            result = process_video_core(self.settings, self.update_status, self.cancel_event)
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            cpu_count = psutil.cpu_count()
+            cpu_freq = psutil.cpu_freq()
+
+            cpu_info = f"CPU: {cpu_percent:.1f}% ({cpu_count} أنوية"
+            if cpu_freq:
+                cpu_info += f", {cpu_freq.current:.0f} MHz"
+            cpu_info += ")"
+
+            
+            memory = psutil.virtual_memory()
+            memory_info = f"الذاكرة: {memory.percent:.1f}% ({memory.used / (1024**3):.1f} / {memory.total / (1024**3):.1f} GB)"
+
+            
+            disk = psutil.disk_usage('/')
+            disk_info = f"القرص: {disk.percent:.1f}% ({disk.free / (1024**3):.1f} GB متاح)"
+
+            
+            self.cpu_info_var.set(cpu_info)
+            self.memory_info_var.set(memory_info)
+            self.disk_info_var.set(disk_info)
+
         except Exception as e:
-            
-            self.after(0, self.update_status, f"An unhandled error occurred in the processing thread: {e}")
-        finally:
-            
-            self.after(0, self.finalize_processing, result)
+            self.cpu_info_var.set(f"خطأ في قراءة معلومات النظام: {e}")
 
-    def finalize_processing(self, result):
-        success, output_path, elapsed_time = result
+    def estimate_processing_time(self):
+        if not self.settings.get('input_path'):
+            messagebox.showwarning("تحذير", "يرجى اختيار ملف فيديو أولاً")
+            return
 
-        
-        self.process_button.config(state=tk.NORMAL)
-        self.stop_button.config(state=tk.DISABLED)
-        self.progress_bar.stop()
-        self.progress_bar.config(mode='determinate')
-        self.progress_var.set(100 if success else 0)
-
-        if success and output_path and os.path.exists(output_path):
-            minutes = int(elapsed_time // 60)
-            seconds = int(elapsed_time % 60)
-            time_str = f"{minutes} دقيقة و {seconds} ثانية" if minutes > 0 else f"{seconds} ثانية"
-
-            file_name = os.path.basename(output_path)
-            save_path = os.path.dirname(output_path)
-            
-            message = (
-                f"اكتملت المعالجة بنجاح!\n\n"
-                f"اسم الملف: {file_name}\n"
-                f"تم الحفظ في: {save_path}\n"
-                f"الوقت المستغرق: {time_str}"
+        try:
+            adaptive_controller = AdaptiveProcessingController()
+            time_estimate = adaptive_controller.estimate_processing_time(
+                self.settings['input_path'], self.settings
             )
-            messagebox.showinfo("اكتملت المعالجة", message)
-        elif not self.cancel_event.is_set():
+
+            strategy = time_estimate['strategy']
+
+            factors = time_estimate.get('factors', {})
+
+            historical_factor = factors.get('historical_factor', 1.0)
+            similar_cases = factors.get('similar_cases', 0)
+
             
-            messagebox.showerror("فشل في المعالجة", "فشلت عملية المعالجة. يرجى مراجعة سجل الحالة لمعرفة التفاصيل.")
-        
-        
-        self.after(2000, lambda: self.progress_var.set(0))
+            accuracy_level = "متوسط"
+            if similar_cases >= 3:
+                accuracy_level = "عالي"
+            elif similar_cases >= 1:
+                accuracy_level = "جيد"
 
-    def save_settings(self):
-        settings_to_save = {name: var.get() for name, var in self.entries.items()}
-        
-        
-        settings_to_save['mirror_enabled'] = self.mirror_enabled_var.get()
-        settings_to_save['processing_mode'] = self.processing_mode_var.get() 
-        
-        
-        settings_to_save['enable_chunking'] = self.enable_chunking_var.get()
-        settings_to_save['chunk_size_seconds'] = self.chunk_size_seconds_var.get()
-        settings_to_save['merge_chunks_after_processing'] = self.merge_chunks_var.get()
-        settings_to_save['crossfade_duration'] = self.crossfade_duration_var.get()
-        settings_to_save['parallel_level'] = self.parallel_level_var.get()
+            estimate_text = f"""
+تقدير وقت المعالجة (محسن مع التعلم):
+• الوقت المقدر: {time_estimate['estimated_hours']:.1f} ساعة ({time_estimate['estimated_minutes']:.0f} دقيقة)
+• مدة الفيديو: {factors.get('duration_minutes', 0):.1f} دقيقة
+• نسبة التعقيد: {factors.get('resolution_factor', 1):.2f}x
+• معامل الوقت الأساسي: {factors.get('base_time_per_minute', 0):.1f} دقيقة/دقيقة فيديو
+• حمولة النظام: {factors.get('system_load', 0):.1f}%
 
-        
-        settings_to_save['compression_enabled'] = self.compression_enabled_var.get()
-        settings_to_save['quality_preset'] = self.quality_preset_var.get()
-        
+التحسين التاريخي:
+• معامل التصحيح: {historical_factor:.2f}x
+• حالات مشابهة: {similar_cases}
+• دقة التقدير: {accuracy_level}
+
+الاستراتيجية:
+• التقسيم: {'نعم' if strategy.get('use_chunking') else 'لا'}
+• المعالجة: {'متوازية' if strategy.get('parallel_processing') else 'تسلسلية'}
+• حجم الدفعة: {strategy.get('batch_size', 0)}
+• عدد العمال: {strategy.get('max_workers', 0)}
+
+ملاحظة: التقدير محسن بناءً على الأداء السابق ويتضمن هامش أمان 15%
         try:
-            with open(self.settings_file, 'w', encoding='utf-8') as f:
-                json.dump(settings_to_save, f, indent=4)
-            self.update_status("تم حفظ جميع الإعدادات بنجاح.")
-        except Exception as e:
-            messagebox.showerror("خطأ في الحفظ", f"لا يمكن حفظ الإعدادات:\n{e}")
+            adaptive_controller = AdaptiveProcessingController()
 
-    def load_settings(self):
+            if not adaptive_controller.performance_history:
+                messagebox.showinfo("إحصائيات التقدير", "لا توجد بيانات أداء سابقة متاحة")
+                return
+
+            
+            history = list(adaptive_controller.performance_history)
+            accuracy_ratios = [r['accuracy_ratio'] for r in history]
+
+            avg_accuracy = sum(accuracy_ratios) / len(accuracy_ratios)
+            min_accuracy = min(accuracy_ratios)
+            max_accuracy = max(accuracy_ratios)
+
+            
+            accurate_predictions = sum(1 for ratio in accuracy_ratios if 0.5 <= ratio <= 1.5)
+            accuracy_percentage = (accurate_predictions / len(accuracy_ratios)) * 100
+
+            
+            total_jobs = len(history)
+            recent_jobs = [r for r in history if time.time() - r['timestamp'] < 30 * 24 * 3600]  
+
+            stats_text = f"""
+إحصائيات دقة تقدير الوقت:
+
+الإحصائيات العامة:
+• إجمالي المهام: {total_jobs}
+• المهام الحديثة (30 يوم): {len(recent_jobs)}
+• متوسط نسبة الدقة: {avg_accuracy:.2f}x
+• أفضل تقدير: {min_accuracy:.2f}x (أسرع من المتوقع)
+• أسوأ تقدير: {max_accuracy:.2f}x (أبطأ من المتوقع)
+
+دقة التقديرات:
+• التقديرات الدقيقة (±50%): {accuracy_percentage:.1f}%
+• التقديرات المتفائلة (<1.0x): {sum(1 for r in accuracy_ratios if r < 1.0)}/{total_jobs}
+• التقديرات المتشائمة (>1.0x): {sum(1 for r in accuracy_ratios if r > 1.0)}/{total_jobs}
+
+نصائح لتحسين الدقة:
+        stats_window = tk.Toplevel(self)
+        stats_window.title(title)
+        stats_window.geometry("500x400")
+        stats_window.configure(bg=self.BG_COLOR)
+
+        
+        content_frame = ttk.Frame(stats_window, style="TFrame")
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        
+        stats_text = tk.Text(content_frame, wrap=tk.WORD, state=tk.DISABLED,
+                           background=self.ENTRY_BG_COLOR, foreground=self.TEXT_COLOR,
+                           relief="solid", borderwidth=1, padx=10, pady=10)
+
+        
+        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=stats_text.yview)
+        stats_text['yscrollcommand'] = scrollbar.set
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        stats_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        
+        stats_text.config(state=tk.NORMAL)
+        stats_text.insert(tk.END, content)
+        stats_text.config(state=tk.DISABLED)
+
+        
+        ttk.Button(stats_window, text="إغلاق", command=stats_window.destroy).pack(pady=10)
+
+    def run_performance_test(self):
+        if not self.settings.get('input_path'):
+            messagebox.showwarning("تحذير", "يرجى اختيار ملف فيديو أولاً")
+            return
+
+        
+        threading.Thread(target=self._performance_test_thread, daemon=True).start()
+
+    def _performance_test_thread(self):
         try:
-            if os.path.exists(self.settings_file):
-                with open(self.settings_file, 'r', encoding='utf-8') as f:
-                    loaded_settings = json.load(f)
-            
-            for name, value in loaded_settings.items():
-                if name in self.entries:
-                    self.entries[name].set(value)
+            self.after(0, lambda: self.log_performance("بدء اختبار الأداء..."))
 
             
-            self.mirror_enabled_var.set(loaded_settings.get('mirror_enabled', self.default_values['mirror_enabled']))
-            self.processing_mode_var.set(loaded_settings.get('processing_mode', self.default_values['processing_mode'])) 
-            self.enable_chunking_var.set(loaded_settings.get('enable_chunking', self.default_values['enable_chunking']))
-            self.chunk_size_seconds_var.set(loaded_settings.get('chunk_size_seconds', str(self.default_values['chunk_size_seconds'])))
-            self.merge_chunks_var.set(loaded_settings.get('merge_chunks_after_processing', self.default_values['merge_chunks_after_processing']))
-            self.crossfade_duration_var.set(loaded_settings.get('crossfade_duration', str(self.default_values['crossfade_duration'])))
-            self.parallel_level_var.set(loaded_settings.get('parallel_level', "تفرع على مستوى الأجزاء (Chunks)"))
+            start_time = time.time()
+            cap = cv2.VideoCapture(self.settings['input_path'])
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
             
-            self.compression_enabled_var.set(loaded_settings.get('compression_enabled', self.default_values['compression_enabled']))
-            self.quality_preset_var.set(loaded_settings.get('quality_preset', self.default_values['quality_preset']))
+            sample_frames = min(100, frame_count)
+            frames_read = 0
+
+            for i in range(sample_frames):
+                ret, frame = cap.read()
+                if ret:
+                    frames_read += 1
+                else:
+                    break
+
+            cap.release()
+            read_time = time.time() - start_time
+
             
-            
-            self.toggle_chunking_widgets_state()
-            self.toggle_crossfade_widget_state()
-            self.toggle_simple_compression_widgets()
-            self.update_status("تم تحميل الإعدادات المحفوظة.")
+            if frames_read > 0:
+                fps_read = frames_read / read_time if read_time > 0 else 0
+
+                self.after(0, lambda: self.log_performance(
+                    f"اختبار القراءة: {frames_read} إطار في {read_time:.2f} ثانية ({fps_read:.1f} إطار/ثانية)"
+                ))
+
+                
+                memory_before = psutil.virtual_memory().percent
+
+                
+                test_frames = []
+                cap = cv2.VideoCapture(self.settings['input_path'])
+                for i in range(min(10, frames_read)):
+                    ret, frame = cap.read()
+                    if ret:
+                        test_frames.append(frame)
+                cap.release()
+
+                memory_after = psutil.virtual_memory().percent
+                memory_usage = memory_after - memory_before
+
+                self.after(0, lambda frames_count=len(test_frames), usage=memory_usage: self.log_performance(
+                    f"اختبار الذاكرة: استخدام إضافي {usage:.1f}% لـ {frames_count} إطار"
+                ))
+
+                
+                del test_frames
+
+                self.after(0, lambda: self.log_performance("اكتمل اختبار الأداء"))
+            else:
+                self.after(0, lambda: self.log_performance("فشل في قراءة الإطارات"))
+
         except Exception as e:
-            self.update_status(f"لم يتم العثور على إعدادات محفوظة أو حدث خطأ: {e}")
-            self.restore_default_settings()
+            self.after(0, lambda: self.log_performance(f"خطأ في اختبار الأداء: {e}"))
 
-    def restore_default_settings(self):
-        for name, value in self.default_values.items():
-            if name in self.entries:
-                self.entries[name].set(str(value))
-        
-        self.mirror_enabled_var.set(self.default_values['mirror_enabled'])
-        self.processing_mode_var.set(self.default_values['processing_mode']) 
-        
-        
-        self.compression_enabled_var.set(self.default_values['compression_enabled'])
-        self.quality_preset_var.set(self.default_values['quality_preset'])
-        
-        
-        self.toggle_simple_compression_widgets()
-        self.update_status("تم استعادة جميع الإعدادات الافتراضية.")
-
-    def toggle_compression_widgets(self):
-        state = tk.NORMAL if self.compression_enabled_var.get() else tk.DISABLED
-        self.quality_combo.config(state=state)
-        self.speed_combo.config(state=state)
-
-    def show_view(self, view_name):
-        
-        self.processing_options_view.pack_forget()
-        self.compression_options_view.pack_forget()
-        self.chunking_options_view.pack_forget()
+    def run_comprehensive_test(self):
+        if not self.settings.get('input_path'):
+            messagebox.showwarning("تحذير", "يرجى اختيار ملف فيديو أولاً")
+            return
 
         
-        self.proc_opts_button.config(style="ViewToggle.TButton")
-        self.comp_opts_button.config(style="ViewToggle.TButton")
-        self.chunking_opts_button.config(style="ViewToggle.TButton")
+        threading.Thread(target=self._comprehensive_test_thread, daemon=True).start()
 
-        if view_name == 'proc':
-            self.processing_options_view.pack(fill=tk.BOTH, expand=True)
-            self.proc_opts_button.config(style="Active.TButton")
-        elif view_name == 'comp':
-            self.compression_options_view.pack(fill=tk.BOTH, expand=True)
-            self.comp_opts_button.config(style="Active.TButton")
-        elif view_name == 'chunk':
-            self.chunking_options_view.pack(fill=tk.BOTH, expand=True)
-            self.chunking_opts_button.config(style="Active.TButton")
+    def _comprehensive_test_thread(self):
+        try:
+            self.after(0, lambda: self.log_performance("بدء الاختبار الشامل للأداء..."))
+
+            
+            performance_tester = PerformanceTester()
+
+            
+            results = performance_tester.run_comprehensive_test(
+                self.settings['input_path'],
+                self.settings,
+                lambda msg: self.after(0, lambda m=msg: self.log_performance(m))
+            )
+
+            if results:
+                
+                report = performance_tester.generate_performance_report()
+
+                
+                self.after(0, lambda: self._show_performance_report(report))
+                self.after(0, lambda: self.log_performance("اكتمل الاختبار الشامل"))
+            else:
+                self.after(0, lambda: self.log_performance("فشل الاختبار الشامل"))
+
+        except Exception as e:
+            self.after(0, lambda: self.log_performance(f"خطأ في الاختبار الشامل: {e}"))
+
+    def _show_performance_report(self, report):
+        report_window = tk.Toplevel(self)
+        report_window.title("تقرير الأداء الشامل")
+        report_window.geometry("600x500")
+        report_window.configure(bg=self.BG_COLOR)
+
+        
+        report_frame = ttk.Frame(report_window, style="TFrame")
+        report_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        
+        report_text = tk.Text(report_frame, wrap=tk.WORD, state=tk.DISABLED,
+                             background=self.ENTRY_BG_COLOR, foreground=self.TEXT_COLOR,
+                             relief="solid", borderwidth=1, padx=10, pady=10)
+
+        
+        scrollbar = ttk.Scrollbar(report_frame, orient="vertical", command=report_text.yview)
+        report_text['yscrollcommand'] = scrollbar.set
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        report_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        
+        report_text.config(state=tk.NORMAL)
+        report_text.insert(tk.END, report)
+        report_text.config(state=tk.DISABLED)
+
+        
+        buttons_frame = ttk.Frame(report_window, style="TFrame")
+        buttons_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        ttk.Button(buttons_frame, text="حفظ التقرير",
+                  command=lambda: self._save_report(report)).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(buttons_frame, text="إغلاق",
+                  command=report_window.destroy).pack(side=tk.RIGHT)
+
+    def _save_report(self, report):
+        try:
+            filename = filedialog.asksaveasfilename(
+                title="حفظ تقرير الأداء",
+                defaultextension=".txt",
+                filetypes=[("ملفات نصية", "*.txt"), ("جميع الملفات", "*.*")]
+            )
+
+            if filename:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(report)
+                messagebox.showinfo("نجح الحفظ", f"تم حفظ التقرير في:\n{filename}")
+
+        except Exception as e:
+            messagebox.showerror("خطأ في الحفظ", f"فشل في حفظ التقرير:\n{e}")
+
+    def log_performance(self, message):
+        timestamp = time.strftime("%H:%M:%S")
+        log_message = f"[{timestamp}] {message}\n"
+
+        self.performance_log.config(state=tk.NORMAL)
+        self.performance_log.insert(tk.END, log_message)
+        self.performance_log.see(tk.END)
+        self.performance_log.config(state=tk.DISABLED)
 
     def open_waveform_editor(self):
         if not MATPLOTLIB_INSTALLED:
@@ -1162,37 +3386,7 @@ class App(tk.Tk):
                                       fade_duration)
         editor.grab_set() 
 
-    def toggle_chunking_widgets_state(self):
-        
-        is_chunking_enabled = self.enable_chunking_var.get()
-        chunking_state = tk.NORMAL if is_chunking_enabled else tk.DISABLED
-        
-        
-        self.chunk_size_entry.config(state=chunking_state)
-        self.merge_chunks_check.config(state=chunking_state)
-        self.manual_merge_button.config(state=chunking_state)
 
-        
-        
-        is_parallel_mode = self.processing_mode_var.get() == 'parallel'
-        
-        
-        parallel_level_state = tk.NORMAL if is_chunking_enabled and is_parallel_mode else tk.DISABLED
-        self.parallel_level_combo.config(state=parallel_level_state)
-        
-
-        
-        self.toggle_crossfade_widget_state()
-
-    def toggle_crossfade_widget_state(self):
-        if self.enable_chunking_var.get() and self.merge_chunks_var.get():
-            self.crossfade_entry.config(state=tk.NORMAL)
-        else:
-            self.crossfade_entry.config(state=tk.DISABLED)
-
-    def manually_merge_chunks(self):
-        from tkinter import messagebox
-        messagebox.showinfo("دمج يدوي", "ميزة دمج الأجزاء يدوياً غير متوفرة حالياً.\nسيتم تطويرها لاحقاً.")
 
     def open_overlay_editor_window(self):
         input_path = self.settings.get('input_path')
@@ -1694,39 +3888,94 @@ class WaveformEditorWindow(tk.Toplevel):
 
 QUALITY_PRESETS = {
     "أعلى جودة ممكنة (ملف كبير)": {
-        "crf": "17",        
-        "preset": "slow",   
-        "resolution": None  
+        "crf": "15",        
+        "preset": "veryslow",   
+        "resolution": None,
+        "tune": "film",
+        "profile": "high",
+        "level": "4.1",
+        "additional_params": ["-x264-params", "ref=16:bframes=16:me=umh:subme=10"]
     },
-    "1080p (Full HD)": {
-        "crf": "22",
-        "preset": "medium",
-        "resolution": 1080
+    "جودة عالية جداً (4K)": {
+        "crf": "18",
+        "preset": "slow",
+        "resolution": 2160,
+        "tune": "film",
+        "profile": "high",
+        "level": "5.1",
+        "additional_params": ["-x264-params", "ref=8:bframes=8"]
     },
-    "720p (HD)": {
+    "1080p (Full HD) - جودة ممتازة": {
+        "crf": "20",
+        "preset": "slow",
+        "resolution": 1080,
+        "tune": "film",
+        "profile": "high",
+        "level": "4.0",
+        "additional_params": ["-x264-params", "ref=5:bframes=5"]
+    },
+    "1080p (Full HD) - متوازن": {
         "crf": "23",
         "preset": "medium",
-        "resolution": 720
+        "resolution": 1080,
+        "tune": "film",
+        "profile": "main",
+        "level": "4.0",
+        "additional_params": []
     },
-    "480p (SD)": {
+    "720p (HD) - جودة عالية": {
         "crf": "24",
         "preset": "medium",
-        "resolution": 480
+        "resolution": 720,
+        "tune": "film",
+        "profile": "main",
+        "level": "3.1",
+        "additional_params": []
     },
-    "360p": {
+    "720p (HD) - سريع": {
         "crf": "26",
         "preset": "fast",
-        "resolution": 360
+        "resolution": 720,
+        "tune": "film",
+        "profile": "main",
+        "level": "3.1",
+        "additional_params": []
     },
-    "240p": {
+    "480p (SD) - جودة جيدة": {
+        "crf": "25",
+        "preset": "medium",
+        "resolution": 480,
+        "tune": "film",
+        "profile": "main",
+        "level": "3.0",
+        "additional_params": []
+    },
+    "360p - للإنترنت": {
         "crf": "28",
-        "preset": "veryfast",
-        "resolution": 240
+        "preset": "fast",
+        "resolution": 360,
+        "tune": "film",
+        "profile": "baseline",
+        "level": "3.0",
+        "additional_params": []
     },
-    "144p": {
+    "240p - ضغط عالي": {
         "crf": "30",
+        "preset": "veryfast",
+        "resolution": 240,
+        "tune": "film",
+        "profile": "baseline",
+        "level": "2.1",
+        "additional_params": []
+    },
+    "144p - أقصى ضغط": {
+        "crf": "32",
         "preset": "ultrafast",
-        "resolution": 144
+        "resolution": 144,
+        "tune": "fastdecode",
+        "profile": "baseline",
+        "level": "1.3",
+        "additional_params": []
     }
 }
 
