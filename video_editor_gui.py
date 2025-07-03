@@ -106,6 +106,8 @@ import mmap
 from collections import deque
 import queue
 import weakref
+import re
+import codecs
 
 try:
     import matplotlib
@@ -386,6 +388,181 @@ def create_separator(parent, orientation="horizontal"):
         separator.pack(fill=tk.Y, padx=5, pady=10)
 
     return separator
+
+class SubtitleProcessor:
+    """معالج ملفات الترجمة SRT"""
+
+    @staticmethod
+    def parse_srt_file(srt_path):
+        """تحليل ملف SRT وإرجاع قائمة بالترجمات"""
+        try:
+            # محاولة قراءة الملف بترميزات مختلفة
+            encodings = ['utf-8', 'utf-8-sig', 'cp1256', 'iso-8859-1', 'windows-1252']
+            content = None
+
+            for encoding in encodings:
+                try:
+                    with codecs.open(srt_path, 'r', encoding=encoding) as f:
+                        content = f.read()
+                    break
+                except (UnicodeDecodeError, UnicodeError):
+                    continue
+
+            if content is None:
+                raise Exception("لا يمكن قراءة ملف الترجمة بأي ترميز مدعوم")
+
+            # تنظيف المحتوى
+            content = content.strip()
+            if not content:
+                raise Exception("ملف الترجمة فارغ")
+
+            # تقسيم إلى كتل الترجمة
+            subtitle_blocks = re.split(r'\n\s*\n', content)
+            subtitles = []
+
+            for i, block in enumerate(subtitle_blocks):
+                if not block.strip():
+                    continue
+
+                lines = block.strip().split('\n')
+                if len(lines) < 3:
+                    continue
+
+                try:
+                    # رقم الترجمة
+                    subtitle_num = int(lines[0].strip())
+
+                    # التوقيت
+                    time_line = lines[1].strip()
+                    time_match = re.match(r'(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})', time_line)
+
+                    if not time_match:
+                        print(f"تحذير: تنسيق التوقيت غير صحيح في السطر {i+1}: {time_line}")
+                        continue
+
+                    start_time = time_match.group(1)
+                    end_time = time_match.group(2)
+
+                    # النص
+                    text_lines = lines[2:]
+                    text = '\n'.join(text_lines).strip()
+
+                    if text:
+                        subtitles.append({
+                            'number': subtitle_num,
+                            'start': start_time,
+                            'end': end_time,
+                            'text': text
+                        })
+
+                except (ValueError, IndexError) as e:
+                    print(f"تحذير: خطأ في تحليل كتلة الترجمة {i+1}: {e}")
+                    continue
+
+            if not subtitles:
+                raise Exception("لم يتم العثور على ترجمات صالحة في الملف")
+
+            print(f"تم تحليل {len(subtitles)} ترجمة من الملف")
+            return subtitles
+
+        except Exception as e:
+            raise Exception(f"خطأ في تحليل ملف SRT: {e}")
+
+    @staticmethod
+    def time_to_seconds(time_str):
+        """تحويل تنسيق الوقت SRT إلى ثوان"""
+        try:
+            # تنسيق: HH:MM:SS,mmm
+            time_parts = time_str.replace(',', '.').split(':')
+            hours = int(time_parts[0])
+            minutes = int(time_parts[1])
+            seconds = float(time_parts[2])
+
+            return hours * 3600 + minutes * 60 + seconds
+        except:
+            return 0
+
+    @staticmethod
+    def validate_srt_file(srt_path):
+        """التحقق من صحة ملف SRT"""
+        try:
+            if not os.path.exists(srt_path):
+                return False, "الملف غير موجود"
+
+            if not srt_path.lower().endswith('.srt'):
+                return False, "الملف ليس من نوع SRT"
+
+            subtitles = SubtitleProcessor.parse_srt_file(srt_path)
+
+            if len(subtitles) == 0:
+                return False, "الملف لا يحتوي على ترجمات صالحة"
+
+            return True, f"ملف صالح يحتوي على {len(subtitles)} ترجمة"
+
+        except Exception as e:
+            return False, f"خطأ في التحقق من الملف: {e}"
+
+    @staticmethod
+    def create_subtitle_filter(subtitle_path, font_size=24, font_color="white",
+                              outline_color="black", outline_width=2, position="bottom",
+                              background_enabled=False, background_color="black",
+                              background_opacity=80, background_padding=10):
+        """إنشاء فلتر FFmpeg للترجمة مع دعم الخلفية"""
+        try:
+            # تحويل مسار الملف للتوافق مع FFmpeg
+            subtitle_path_escaped = subtitle_path.replace('\\', '/').replace(':', '\\:')
+
+            # إعدادات الألوان (BGR format for FFmpeg)
+            color_map = {
+                'white': '&Hffffff', 'black': '&H000000', 'red': '&H0000ff',
+                'green': '&H00ff00', 'blue': '&Hff0000', 'yellow': '&H00ffff',
+                'gray': '&H808080', 'darkgray': '&H404040', 'orange': '&H0080ff',
+                'purple': '&Hff00ff'
+            }
+
+            primary_color = color_map.get(font_color.lower(), '&Hffffff')
+            outline_color_hex = color_map.get(outline_color.lower(), '&H000000')
+
+            # إعدادات الموضع
+            alignment_map = {
+                'bottom': 2,  # أسفل الوسط
+                'top': 8,     # أعلى الوسط
+                'center': 5   # الوسط
+            }
+            alignment = alignment_map.get(position.lower(), 2)
+
+            # إعدادات الخلفية
+            background_style = ""
+            if background_enabled:
+                bg_color_hex = color_map.get(background_color.lower(), '&H000000')
+                # تحويل الشفافية من نسبة مئوية إلى قيمة hex (0-255)
+                bg_alpha = int((100 - background_opacity) * 255 / 100)
+                bg_alpha_hex = f"&H{bg_alpha:02x}"
+
+                background_style = (
+                    f",BackColour={bg_color_hex}"
+                    f",BorderStyle=4"  # Box background
+                    f",Shadow=0"
+                    f",MarginV={background_padding}"
+                    f",MarginL={background_padding}"
+                    f",MarginR={background_padding}"
+                )
+
+            # إنشاء فلتر الترجمة
+            subtitle_filter = (
+                f"subtitles='{subtitle_path_escaped}'"
+                f":force_style='FontSize={font_size},"
+                f"PrimaryColour={primary_color},"
+                f"OutlineColour={outline_color_hex},"
+                f"Outline={outline_width},"
+                f"Alignment={alignment}"
+                f"{background_style}'"
+            )
+
+            return subtitle_filter
+
+        except Exception as e:
+            raise Exception(f"خطأ في إنشاء فلتر الترجمة: {e}")
 
 def apply_arabic_fixes_to_app(app):
     if not ARABIC_SUPPORT:
@@ -927,7 +1104,7 @@ class OptimizedVideoIO:
         
         if settings.get('compression_enabled', False):
             preset_name = settings.get('quality_preset', '1080p (Full HD) - متوازن')
-            preset_config = QUALITY_PRESETS.get(preset_name, QUALITY_PRESETS['1080p (Full HD) - متوازن'])
+            preset_config = QUALITY_PRESETS.get(preset_name, QUALITY_PRESETS['1080p (Full HD) - Balanced'])
 
             
             hardware_encoder, vendor = self.get_best_hardware_encoder()
@@ -941,18 +1118,18 @@ class OptimizedVideoIO:
                 if 'nvenc' in hardware_encoder:
                     
                     base_params.extend([
-                        '-preset', 'p4',  
-                        '-tune', 'hq',    
-                        '-rc', 'vbr',     
-                        '-cq', preset_config['crf'],
-                        '-b:v', '0',      
+                        '-preset', 'p4',
+                        '-tune', 'hq',
+                        '-rc', 'vbr',
+                        '-cq', preset_config.get('crf', '23'),
+                        '-b:v', '0',
                         '-profile:v', 'main'
                     ])
                 elif 'qsv' in hardware_encoder:
                     
                     base_params.extend([
                         '-preset', 'medium',
-                        '-global_quality', preset_config['crf'],
+                        '-global_quality', preset_config.get('crf', '23'),
                         '-look_ahead', '1',
                         '-profile:v', 'main'
                     ])
@@ -961,22 +1138,22 @@ class OptimizedVideoIO:
                     base_params.extend([
                         '-quality', 'balanced',
                         '-rc', 'cqp',
-                        '-qp_i', preset_config['crf'],
-                        '-qp_p', preset_config['crf'],
+                        '-qp_i', preset_config.get('crf', '23'),
+                        '-qp_p', preset_config.get('crf', '23'),
                         '-profile:v', 'main'
                     ])
                 elif 'videotoolbox' in hardware_encoder:
                     
                     base_params.extend([
-                        '-q:v', preset_config['crf'],
+                        '-q:v', preset_config.get('crf', '23'),
                         '-profile:v', 'main'
                     ])
             else:
                 
                 base_params.extend([
                     '-c:v', 'libx264',
-                    '-crf', preset_config['crf'],
-                    '-preset', preset_config['preset'],
+                    '-crf', preset_config.get('crf', '23'),
+                    '-preset', preset_config.get('preset', 'medium'),
                     '-tune', preset_config.get('tune', 'film'),
                     '-profile:v', preset_config.get('profile', 'main'),
                     '-level', preset_config.get('level', '4.0')
@@ -1002,8 +1179,8 @@ class OptimizedVideoIO:
                     '-aq-strength', '1.0'  
                 ])
 
-            
-            if preset_config['resolution']:
+
+            if preset_config.get('resolution'):
                 base_params.extend(['-vf', f"scale=-2:{preset_config['resolution']}:flags=lanczos"])
 
         else:
@@ -1360,7 +1537,7 @@ class AdaptiveProcessingController:
 
             
             if settings.get('compression_enabled', False):
-                preset = settings.get('quality_preset', '1080p (Full HD)')
+                preset = settings.get('quality_preset', '1080p (Full HD) - متوازن')
                 if 'أعلى جودة' in preset:
                     base_time_per_minute *= 3.0
                 elif '1080p' in preset:
@@ -2057,7 +2234,7 @@ class PerformanceTester:
         return report
 
 QUALITY_PRESETS = {
-    "أعلى جودة ممكنة (ملف كبير)": {
+    "Highest Quality (Large File)": {
         "crf": "15",
         "preset": "slow",
         "resolution": None,
@@ -2066,7 +2243,7 @@ QUALITY_PRESETS = {
         "level": "4.1",
         "additional_params": ["-x264opts", "ref=16:bframes=16:b-adapt=2:direct=auto:me=umh:subme=11:analyse=all:trellis=2:psy-rd=1.0,0.15"]
     },
-    "1080p (Full HD) - متوازن": {
+    "1080p (Full HD) - Balanced": {
         "crf": "22",
         "preset": "medium",
         "resolution": 1080,
@@ -2074,7 +2251,7 @@ QUALITY_PRESETS = {
         "profile": "main",
         "level": "4.0"
     },
-    "1080p (Full HD) - جودة ممتازة": {
+    "1080p (Full HD) - Excellent Quality": {
         "crf": "20",
         "preset": "slow",
         "resolution": 1080,
@@ -2082,7 +2259,7 @@ QUALITY_PRESETS = {
         "profile": "high",
         "level": "4.0"
     },
-    "720p (HD) - سريع": {
+    "720p (HD) - Fast": {
         "crf": "23",
         "preset": "fast",
         "resolution": 720,
@@ -2090,7 +2267,7 @@ QUALITY_PRESETS = {
         "profile": "main",
         "level": "3.1"
     },
-    "720p (HD) - جودة عالية": {
+    "720p (HD) - High Quality": {
         "crf": "21",
         "preset": "medium",
         "resolution": 720,
@@ -2098,7 +2275,7 @@ QUALITY_PRESETS = {
         "profile": "high",
         "level": "3.1"
     },
-    "480p (SD) - جودة جيدة": {
+    "480p (SD) - Good Quality": {
         "crf": "24",
         "preset": "medium",
         "resolution": 480,
@@ -2106,7 +2283,7 @@ QUALITY_PRESETS = {
         "profile": "main",
         "level": "3.0"
     },
-    "360p - سريع": {
+    "360p - Fast": {
         "crf": "26",
         "preset": "fast",
         "resolution": 360,
@@ -2114,7 +2291,7 @@ QUALITY_PRESETS = {
         "profile": "baseline",
         "level": "3.0"
     },
-    "240p - أسرع": {
+    "240p - Fastest": {
         "crf": "28",
         "preset": "veryfast",
         "resolution": 240,
@@ -2212,6 +2389,8 @@ class FrameProcessor:
                     frame = self._apply_pixelate_overlay(frame, x, y, w, h)
                 elif o_type in ['rect', 'circle']:
                     frame = self._apply_shape_overlay(frame, overlay, x, y, w, h)
+                elif o_type == 'subtitle':
+                    frame = self._apply_subtitle_overlay(frame, overlay, x, y, w, h, new_width, new_height)
 
             except Exception as e:
                 print(f"خطأ في تطبيق العنصر {o_type}: {e}")
@@ -2279,6 +2458,94 @@ class FrameProcessor:
             cv2.ellipse(frame, (x + w//2, y + h//2), (w//2, h//2), 0, 0, 360, color_bgr, thickness)
 
         return frame
+
+    def _apply_subtitle_overlay(self, frame, overlay, x, y, w, h, new_width, new_height):
+        """Apply subtitle overlay with background support"""
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            import cv2
+
+            # Get subtitle properties
+            text = overlay.get('text', 'Subtitle')
+            font_size = overlay.get('font_size', 24)
+            font_color = overlay.get('font_color', 'white')
+            outline_color = overlay.get('outline_color', 'black')
+            outline_width = overlay.get('outline_width', 2)
+            bg_enabled = overlay.get('background_enabled', False)
+            bg_color = overlay.get('background_color', 'black')
+            bg_opacity = overlay.get('background_opacity', 80)
+            bg_padding = overlay.get('background_padding', 10)
+
+            # Convert frame to PIL Image
+            frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(frame_pil)
+
+            # Load font
+            try:
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except:
+                font = ImageFont.load_default()
+
+            # Get text size
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+
+            # Calculate text position (center in the subtitle area)
+            text_x = x + (w - text_width) // 2
+            text_y = y + (h - text_height) // 2
+
+            # Color mapping
+            color_map = {
+                'white': (255, 255, 255), 'black': (0, 0, 0),
+                'yellow': (255, 255, 0), 'red': (255, 0, 0),
+                'blue': (0, 0, 255), 'green': (0, 255, 0),
+                'orange': (255, 165, 0), 'purple': (128, 0, 128),
+                'gray': (128, 128, 128), 'darkgray': (64, 64, 64)
+            }
+
+            # Draw background if enabled
+            if bg_enabled:
+                bg_rgb = color_map.get(bg_color.lower(), (0, 0, 0))
+                bg_alpha = int(bg_opacity * 255 / 100)
+
+                # Calculate background rectangle
+                bg_x1 = text_x - bg_padding
+                bg_y1 = text_y - bg_padding
+                bg_x2 = text_x + text_width + bg_padding
+                bg_y2 = text_y + text_height + bg_padding
+
+                # Create background overlay
+                bg_overlay = Image.new('RGBA', frame_pil.size, (0, 0, 0, 0))
+                bg_draw = ImageDraw.Draw(bg_overlay)
+                bg_draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2],
+                                fill=(*bg_rgb, bg_alpha))
+
+                # Composite background
+                frame_pil = Image.alpha_composite(frame_pil.convert('RGBA'), bg_overlay).convert('RGB')
+                draw = ImageDraw.Draw(frame_pil)
+
+            # Get actual colors
+            actual_font_color = color_map.get(font_color.lower(), (255, 255, 255))
+            actual_outline_color = color_map.get(outline_color.lower(), (0, 0, 0))
+
+            # Draw text with outline
+            if outline_width > 0:
+                for dx in range(-outline_width, outline_width + 1):
+                    for dy in range(-outline_width, outline_width + 1):
+                        if dx != 0 or dy != 0:
+                            draw.text((text_x + dx, text_y + dy), text, font=font, fill=actual_outline_color)
+
+            # Draw main text
+            draw.text((text_x, text_y), text, font=font, fill=actual_font_color)
+
+            # Convert back to OpenCV format
+            frame_result = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
+            return frame_result
+
+        except Exception as e:
+            print(f"Error applying subtitle overlay: {e}")
+            return frame
 
     def _apply_x_effect(self, frame, settings, new_width, new_height):
         x_mask = np.zeros((new_height, new_width), dtype=np.uint8)
@@ -2400,6 +2667,9 @@ def process_video_chunk(chunk_settings, cancel_event, status_callback=None, stat
                             img = Image.open(info['path']).convert('RGBA')
                             resample = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS', Image.BICUBIC)
                             prep_info['data'] = np.array(img.resize((prep_info['w'], prep_info['h']), resample))
+                        elif info['type'] == 'subtitle':
+                            # Keep subtitle info for processing
+                            prep_info['type'] = 'subtitle'
                         overlays_to_apply.append(prep_info)
                     except Exception as e: send_status(f"Warning: Could not prepare overlay: {e}")
         
@@ -2518,35 +2788,88 @@ def process_video_chunk(chunk_settings, cancel_event, status_callback=None, stat
         ]
 
         if chunk_settings.get('compression_enabled', False):
-            preset_name = chunk_settings.get('quality_preset', '1080p (Full HD)')
-            preset_config = QUALITY_PRESETS.get(preset_name, QUALITY_PRESETS['1080p (Full HD)'])
+            preset_name = chunk_settings.get('quality_preset', '1080p (Full HD) - متوازن')
+            preset_config = QUALITY_PRESETS.get(preset_name, QUALITY_PRESETS['1080p (Full HD) - Balanced'])
 
             # إعداد فلاتر الفيديو
             video_filters = [f"setpts={1/chunk_settings['speed_factor']}*PTS"]
-            if preset_config['resolution']:
+            if preset_config.get('resolution'):
                 video_filters.append(f"scale=-2:{preset_config['resolution']}")
+
+            # إضافة فلتر الترجمة إذا كان مفعلاً
+            if chunk_settings.get('subtitle_enabled', False) and chunk_settings.get('subtitle_path'):
+                try:
+                    subtitle_filter = SubtitleProcessor.create_subtitle_filter(
+                        chunk_settings['subtitle_path'],
+                        chunk_settings.get('subtitle_font_size', 24),
+                        chunk_settings.get('subtitle_font_color', 'white'),
+                        chunk_settings.get('subtitle_outline_color', 'black'),
+                        chunk_settings.get('subtitle_outline_width', 2),
+                        chunk_settings.get('subtitle_position', 'bottom'),
+                        chunk_settings.get('subtitle_background_enabled', False),
+                        chunk_settings.get('subtitle_background_color', 'black'),
+                        chunk_settings.get('subtitle_background_opacity', 80),
+                        chunk_settings.get('subtitle_background_padding', 10)
+                    )
+                    video_filters.append(subtitle_filter)
+                    send_status(f"Chunk {chunk_index + 1}: Subtitle filter added")
+                except Exception as e:
+                    send_status(f"Chunk {chunk_index + 1}: Warning - Failed to add subtitles: {e}")
 
             # إضافة فلاتر الفيديو والصوت
             command.extend(['-vf', ",".join(video_filters)])
             command.extend(['-filter:a', f"atempo={chunk_settings['speed_factor']}"])
 
             # إعدادات الضغط للفيديو
-            command.extend(['-c:v', 'libx264', '-crf', preset_config['crf'], '-preset', preset_config['preset']])
+            command.extend(['-c:v', 'libx264', '-crf', preset_config.get('crf', '23'), '-preset', preset_config.get('preset', 'medium')])
 
             # إضافة إعدادات إضافية للضغط إذا كانت متوفرة
             if preset_config.get('tune'):
-                command.extend(['-tune', preset_config['tune']])
+                command.extend(['-tune', preset_config.get('tune')])
             if preset_config.get('profile'):
-                command.extend(['-profile:v', preset_config['profile']])
+                command.extend(['-profile:v', preset_config.get('profile')])
             if preset_config.get('level'):
-                command.extend(['-level', preset_config['level']])
+                command.extend(['-level', preset_config.get('level')])
+
+            # إضافة المعاملات الإضافية إذا كانت متوفرة
+            if preset_config.get('additional_params'):
+                command.extend(preset_config['additional_params'])
 
             # إعدادات الصوت للضغط
             command.extend(['-c:a', 'aac'])
 
         else:
-            command.extend(['-filter_complex', f"[0:v]setpts={1/chunk_settings['speed_factor']}*PTS[v];[1:a]atempo={chunk_settings['speed_factor']}[a]"])
-            command.extend(['-map', '[v]', '-map', '[a]'])
+            # إعداد فلاتر الفيديو للوضع العادي
+            video_filters = [f"setpts={1/chunk_settings['speed_factor']}*PTS"]
+
+            # إضافة فلتر الترجمة إذا كان مفعلاً
+            if chunk_settings.get('subtitle_enabled', False) and chunk_settings.get('subtitle_path'):
+                try:
+                    subtitle_filter = SubtitleProcessor.create_subtitle_filter(
+                        chunk_settings['subtitle_path'],
+                        chunk_settings.get('subtitle_font_size', 24),
+                        chunk_settings.get('subtitle_font_color', 'white'),
+                        chunk_settings.get('subtitle_outline_color', 'black'),
+                        chunk_settings.get('subtitle_outline_width', 2),
+                        chunk_settings.get('subtitle_position', 'bottom'),
+                        chunk_settings.get('subtitle_background_enabled', False),
+                        chunk_settings.get('subtitle_background_color', 'black'),
+                        chunk_settings.get('subtitle_background_opacity', 80),
+                        chunk_settings.get('subtitle_background_padding', 10)
+                    )
+                    video_filters.append(subtitle_filter)
+                    send_status(f"Chunk {chunk_index + 1}: Subtitle filter added")
+                except Exception as e:
+                    send_status(f"Chunk {chunk_index + 1}: Warning - Failed to add subtitles: {e}")
+
+            # استخدام فلتر مركب
+            if len(video_filters) > 1:
+                video_filter_chain = ",".join(video_filters)
+                command.extend(['-filter_complex', f"[0:v]{video_filter_chain}[v];[1:a]atempo={chunk_settings['speed_factor']}[a]"])
+                command.extend(['-map', '[v]', '-map', '[a]'])
+            else:
+                command.extend(['-filter_complex', f"[0:v]setpts={1/chunk_settings['speed_factor']}*PTS[v];[1:a]atempo={chunk_settings['speed_factor']}[a]"])
+                command.extend(['-map', '[v]', '-map', '[a]'])
 
         command.append(os.path.normpath(output_path))
 
@@ -2906,9 +3229,9 @@ class App(tk.Tk):
             print(f"خطأ في تكوين دعم العربية: {e}")
             self.arabic_font = "Arial"
 
-        
-        title_text = "محرر الفيديو المتقدم"
-        ArabicText.set_title(self, title_text)
+
+        title_text = "Advanced Video Editor"
+        self.title(title_text)
         self.geometry("950x750")
         self.minsize(800, 600)
         self.configure(bg=self.BG_COLOR)
@@ -2961,7 +3284,14 @@ class App(tk.Tk):
             "mirror_enabled": True,
             "processing_mode": "parallel",
             "compression_enabled": False,
-            "quality_preset": "1080p (Full HD)"
+            "quality_preset": "1080p (Full HD) - Balanced",
+            "subtitle_enabled": False,
+            "subtitle_path": "",
+            "subtitle_font_size": 24,
+            "subtitle_font_color": "white",
+            "subtitle_outline_color": "black",
+            "subtitle_outline_width": 2,
+            "subtitle_position": "bottom"
         }
         self.settings_file = os.path.join(base_path, "settings.json")
         self.processed_chunk_files = [] 
@@ -2971,12 +3301,24 @@ class App(tk.Tk):
         self.processing_mode_var = tk.StringVar(value=self.default_values["processing_mode"])
         self.compression_enabled_var = tk.BooleanVar(value=self.default_values["compression_enabled"])
         self.quality_preset_var = tk.StringVar(value=self.default_values["quality_preset"])
+
+        # متغيرات الترجمة
+        self.subtitle_enabled_var = tk.BooleanVar(value=self.default_values["subtitle_enabled"])
+        self.subtitle_path_var = tk.StringVar(value=self.default_values["subtitle_path"])
+        self.subtitle_font_size_var = tk.StringVar(value=str(self.default_values["subtitle_font_size"]))
+        self.subtitle_font_color_var = tk.StringVar(value=self.default_values["subtitle_font_color"])
+        self.subtitle_outline_color_var = tk.StringVar(value=self.default_values["subtitle_outline_color"])
+        self.subtitle_outline_width_var = tk.StringVar(value=str(self.default_values["subtitle_outline_width"]))
+        self.subtitle_position_var = tk.StringVar(value=self.default_values["subtitle_position"])
         
         self.setup_styles()
         self.create_widgets()
         self.load_settings()
         self.show_view('proc')
 
+        # Update control states
+        self._update_compression_controls()
+        self._update_subtitle_controls()
 
         self.after(100, lambda: apply_arabic_fixes_to_app(self))
 
@@ -3082,29 +3424,29 @@ class App(tk.Tk):
         left_canvas.bind("<Configure>", _on_left_canvas_configure)
         left_canvas.bind("<MouseWheel>", _on_mousewheel)
 
-        # إنشاء الجانب الأيمن للحالة والتقدم
+        # Create right panel for status and progress
         right_panel_container = ttk.Frame(paned_window, style="TFrame")
         paned_window.add(right_panel_container, weight=1)
 
-        # منطقة الحالة
-        status_frame = ttk.LabelFrame(right_panel_container, text="حالة المعالجة", padding=10)
+        # Status area
+        status_frame = ttk.LabelFrame(right_panel_container, text="Processing Status", padding=10)
         status_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # شريط التقدم
+        # Progress bar
         progress_frame = ttk.Frame(status_frame, style="TFrame")
         progress_frame.pack(fill=tk.X, pady=(0, 10))
 
-        ttk.Label(progress_frame, text="التقدم:").pack(anchor='w')
+        ttk.Label(progress_frame, text="Progress:").pack(anchor='w')
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var,
                                           maximum=100, mode='determinate')
         self.progress_bar.pack(fill=tk.X, pady=5)
 
-        # منطقة نص الحالة
+        # Status text area
         text_frame = ttk.Frame(status_frame, style="TFrame")
         text_frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(text_frame, text="سجل المعالجة:").pack(anchor='w')
+        ttk.Label(text_frame, text="Processing Log:").pack(anchor='w')
 
         text_container = ttk.Frame(text_frame, style="TFrame")
         text_container.pack(fill=tk.BOTH, expand=True, pady=5)
@@ -3119,11 +3461,11 @@ class App(tk.Tk):
         status_scrollbar.pack(side="right", fill="y")
         self.status_text.pack(side="left", fill="both", expand=True)
 
-        # معلومات النظام
-        system_frame = ttk.LabelFrame(right_panel_container, text="معلومات النظام", padding=10)
+        # System information
+        system_frame = ttk.LabelFrame(right_panel_container, text="System Information", padding=10)
         system_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
 
-        self.cpu_info_var = tk.StringVar(value="جاري تحميل معلومات النظام...")
+        self.cpu_info_var = tk.StringVar(value="Loading system information...")
         self.memory_info_var = tk.StringVar(value="")
         self.disk_info_var = tk.StringVar(value="")
 
@@ -3135,111 +3477,205 @@ class App(tk.Tk):
                  font=('Arial', 9), foreground='#888888').pack(anchor='w')
 
 
-        file_frame = ttk.LabelFrame(left_panel, text="1. اختيار الملفات", padding=10)
+        file_frame = ttk.LabelFrame(left_panel, text="1. File Selection", padding=10)
         file_frame.pack(fill=tk.X, padx=5, pady=(5, 10))
-        self.input_path_var = tk.StringVar(value="لم يتم اختيار ملف")
-        self.output_path_var = tk.StringVar(value="لم يتم اختيار مكان الحفظ")
-        ttk.Button(file_frame, text="اختر فيديو للمعالجة", command=self.select_input).grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+        self.input_path_var = tk.StringVar(value="No file selected")
+        self.output_path_var = tk.StringVar(value="No output location selected")
+        ttk.Button(file_frame, text="Select Video for Processing", command=self.select_input).grid(row=0, column=0, sticky="ew", padx=5, pady=5)
         ttk.Label(file_frame, textvariable=self.input_path_var).grid(row=0, column=1, sticky="ew", padx=5)
-        ttk.Button(file_frame, text="اختر مكان حفظ الناتج", command=self.select_output).grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+        ttk.Button(file_frame, text="Select Output Location", command=self.select_output).grid(row=1, column=0, sticky="ew", padx=5, pady=5)
         ttk.Label(file_frame, textvariable=self.output_path_var).grid(row=1, column=1, sticky="ew", padx=5)
         file_frame.columnconfigure(1, weight=1)
 
-        
+
         tools_frame = ttk.Frame(left_panel, style="TFrame")
         tools_frame.pack(fill=tk.X, padx=5, pady=5)
-        self.waveform_button = ttk.Button(tools_frame, text="محرر الموجة الصوتية", command=self.open_waveform_editor)
+        self.waveform_button = ttk.Button(tools_frame, text="Audio Waveform Editor", command=self.open_waveform_editor)
         self.waveform_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
-        self.preview_logo_button = ttk.Button(tools_frame, text="محرر العناصر (Overlays)", command=self.open_overlay_editor_window)
+        self.preview_logo_button = ttk.Button(tools_frame, text="Element Editor (Overlays & Subtitles)", command=self.open_overlay_editor_window)
         self.preview_logo_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
 
         
         view_buttons_frame = ttk.Frame(left_panel, style="TFrame")
         view_buttons_frame.pack(fill=tk.X, padx=5, pady=(10, 0))
-        self.proc_opts_button = ttk.Button(view_buttons_frame, text="خيارات المعالجة", command=lambda: self.show_view('proc'), style="ViewToggle.TButton")
+
+        # First row of buttons
+        view_buttons_row1 = ttk.Frame(view_buttons_frame, style="TFrame")
+        view_buttons_row1.pack(fill=tk.X, pady=(0, 2))
+        self.proc_opts_button = ttk.Button(view_buttons_row1, text="Processing Options", command=lambda: self.show_view('proc'), style="ViewToggle.TButton")
         self.proc_opts_button.pack(side=tk.LEFT, padx=(0, 2), fill=tk.X, expand=True)
-        self.comp_opts_button = ttk.Button(view_buttons_frame, text="ضغط الفيديو", command=lambda: self.show_view('comp'), style="ViewToggle.TButton")
-        self.comp_opts_button.pack(side=tk.LEFT, padx=(2, 2), fill=tk.X, expand=True)
-        self.perf_opts_button = ttk.Button(view_buttons_frame, text="مراقبة الأداء", command=lambda: self.show_view('perf'), style="ViewToggle.TButton")
+        self.comp_opts_button = ttk.Button(view_buttons_row1, text="Video Compression", command=lambda: self.show_view('comp'), style="ViewToggle.TButton")
+        self.comp_opts_button.pack(side=tk.LEFT, padx=(2, 0), fill=tk.X, expand=True)
+
+        # Second row of buttons
+        view_buttons_row2 = ttk.Frame(view_buttons_frame, style="TFrame")
+        view_buttons_row2.pack(fill=tk.X)
+        self.subtitle_opts_button = ttk.Button(view_buttons_row2, text="Subtitles", command=lambda: self.show_view('subtitle'), style="ViewToggle.TButton")
+        self.subtitle_opts_button.pack(side=tk.LEFT, padx=(0, 2), fill=tk.X, expand=True)
+        self.perf_opts_button = ttk.Button(view_buttons_row2, text="Performance Monitor", command=lambda: self.show_view('perf'), style="ViewToggle.TButton")
         self.perf_opts_button.pack(side=tk.LEFT, padx=(2, 0), fill=tk.X, expand=True)
 
-        
+        # Settings control buttons
+        settings_buttons_frame = ttk.Frame(left_panel, style="TFrame")
+        settings_buttons_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
+
+        self.save_settings_button = ttk.Button(settings_buttons_frame, text="Save Settings", command=self.save_settings_manual)
+        self.save_settings_button.pack(side=tk.LEFT, padx=(0, 2), fill=tk.X, expand=True)
+
+        self.reset_settings_button = ttk.Button(settings_buttons_frame, text="Reset to Default", command=self.reset_to_default)
+        self.reset_settings_button.pack(side=tk.LEFT, padx=(2, 0), fill=tk.X, expand=True)
+
+
         self.options_views_container = ttk.Frame(left_panel)
         self.options_views_container.pack(fill=tk.BOTH, expand=True)
 
         
 
-        
+
         self.processing_options_view = ttk.Frame(self.options_views_container, style="TFrame")
-        proc_main_frame = ttk.LabelFrame(self.processing_options_view, text="خيارات المعالجة الأساسية", padding=10)
+        proc_main_frame = ttk.LabelFrame(self.processing_options_view, text="Basic Processing Options", padding=10)
         proc_main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.entries = {}
         options = [
-            ("اقتصاص علوي:", "crop_top"), ("اقتصاص سفلي:", "crop_bottom"), 
-            ("اقتصاص يسار:", "crop_left"), ("اقتصاص يمين:", "crop_right"),
-            ("سطوع (Brightness):", "brightness"), ("تباين (Contrast):", "contrast"), 
-            ("عامل السرعة:", "speed_factor"), ("مقياس اللوجو:", "logo_scale"),
-            ("مدة موجة الصوت:", "wave_chunk_duration"), ("مدة تلاشي الموجة:", "wave_fade"),
-            ("سمك خط X:", "x_thickness"), ("قوة إضاءة X:", "x_lighten")
+            ("Top Crop:", "crop_top"), ("Bottom Crop:", "crop_bottom"),
+            ("Left Crop:", "crop_left"), ("Right Crop:", "crop_right"),
+            ("Brightness:", "brightness"), ("Contrast:", "contrast"),
+            ("Speed Factor:", "speed_factor"), ("Logo Scale:", "logo_scale"),
+            ("Audio Wave Duration:", "wave_chunk_duration"), ("Wave Fade Duration:", "wave_fade"),
+            ("X Line Thickness:", "x_thickness"), ("X Light Intensity:", "x_lighten")
         ]
-        
+
         for i, (text, name) in enumerate(options):
             ttk.Label(proc_main_frame, text=text).grid(row=i, column=0, sticky="w", padx=5, pady=2)
             var = tk.StringVar(value=str(self.default_values.get(name, '')))
             entry = ttk.Entry(proc_main_frame, textvariable=var)
             entry.grid(row=i, column=1, sticky="ew", padx=5, pady=2)
             self.entries[name] = var
-        
-        
-        mirror_check = ttk.Checkbutton(proc_main_frame, text="عكس الفيديو (Mirror)", variable=self.mirror_enabled_var)
+
+
+        mirror_check = ttk.Checkbutton(proc_main_frame, text="Mirror Video", variable=self.mirror_enabled_var)
         mirror_check.grid(row=len(options), column=0, columnspan=2, sticky='w', padx=5, pady=5)
-        
-        
-        proc_mode_label = ttk.Label(proc_main_frame, text="نوع المعالجة:")
+
+
+        proc_mode_label = ttk.Label(proc_main_frame, text="Processing Mode:")
         proc_mode_label.grid(row=len(options) + 1, column=0, sticky='w', padx=5, pady=5)
         proc_mode_frame = ttk.Frame(proc_main_frame, style="TFrame")
         proc_mode_frame.grid(row=len(options) + 1, column=1, sticky='ew')
-        
 
-        ttk.Radiobutton(proc_mode_frame, text="تفرعي (موصى)", variable=self.processing_mode_var, value="parallel").pack(side=tk.LEFT, expand=True)
-        ttk.Radiobutton(proc_mode_frame, text="تسلسلي", variable=self.processing_mode_var, value="sequential").pack(side=tk.LEFT, expand=True)
 
-        
-        smart_info_frame = ttk.LabelFrame(proc_main_frame, text="التقسيم الذكي التلقائي", padding=5)
+        ttk.Radiobutton(proc_mode_frame, text="Parallel (Recommended)", variable=self.processing_mode_var, value="parallel").pack(side=tk.LEFT, expand=True)
+        ttk.Radiobutton(proc_mode_frame, text="Sequential", variable=self.processing_mode_var, value="sequential").pack(side=tk.LEFT, expand=True)
+
+
+        smart_info_frame = ttk.LabelFrame(proc_main_frame, text="Automatic Smart Processing", padding=5)
         smart_info_frame.grid(row=len(options) + 2, column=0, columnspan=2, sticky='ew', padx=5, pady=10)
 
         info_text = """
-🤖 النظام يقوم تلقائياً بـ:
-- تحليل حجم ومدة الفيديو
-- اختيار أفضل استراتيجية معالجة
-- تقسيم الفيديوهات الطويلة (>30 دقيقة) تلقائياً
-- تحسين استخدام الموارد حسب النظام
-- حفظ نقاط تحكم للاستئناف عند الحاجة
+🤖 The system automatically:
+- Analyzes video size and duration
+- Selects optimal processing strategy
+- Splits long videos (>30 minutes) automatically
+- Optimizes resource usage based on system
+- Saves checkpoints for resuming when needed
 """
 
-        info_label = ttk.Label(smart_info_frame, text=info_text, justify='right',
+        info_label = ttk.Label(smart_info_frame, text=info_text, justify='left',
                               font=('Arial', 9), foreground='#666666')
         info_label.grid(row=0, column=0, sticky='w', padx=5, pady=5)
 
-        # إنشاء عرض خيارات الضغط
+        # Create compression options view
         self.compression_options_view = ttk.Frame(self.options_views_container, style="TFrame")
-        comp_main_frame = ttk.LabelFrame(self.compression_options_view, text="خيارات ضغط الفيديو", padding=10)
+        comp_main_frame = ttk.LabelFrame(self.compression_options_view, text="Video Compression Options", padding=10)
         comp_main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # تفعيل الضغط
-        ttk.Checkbutton(comp_main_frame, text="تفعيل ضغط الفيديو",
+        # Enable compression
+        ttk.Checkbutton(comp_main_frame, text="Enable Video Compression",
                        variable=self.compression_enabled_var,
                        command=self._update_compression_controls).pack(anchor='w', pady=5)
 
-        # خيارات الجودة
+        # Quality options
         quality_frame = ttk.Frame(comp_main_frame, style="TFrame")
         quality_frame.pack(fill=tk.X, pady=5)
 
-        ttk.Label(quality_frame, text="جودة الفيديو:").pack(anchor='w')
+        ttk.Label(quality_frame, text="Video Quality:").pack(anchor='w')
         self.quality_preset_combo = ttk.Combobox(quality_frame, textvariable=self.quality_preset_var,
                                                values=list(QUALITY_PRESETS.keys()),
                                                state="readonly")
         self.quality_preset_combo.pack(fill=tk.X, pady=2)
+
+        # إنشاء عرض خيارات الترجمة
+        self.subtitle_options_view = ttk.Frame(self.options_views_container, style="TFrame")
+        subtitle_main_frame = ttk.LabelFrame(self.subtitle_options_view, text="Subtitle Options", padding=10)
+        subtitle_main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # تفعيل الترجمة
+        ttk.Checkbutton(subtitle_main_frame, text="Enable Subtitles",
+                       variable=self.subtitle_enabled_var,
+                       command=self._update_subtitle_controls).pack(anchor='w', pady=5)
+
+        # اختيار ملف الترجمة
+        subtitle_file_frame = ttk.Frame(subtitle_main_frame, style="TFrame")
+        subtitle_file_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Label(subtitle_file_frame, text="Subtitle File (.srt):").pack(anchor='w')
+
+        subtitle_path_frame = ttk.Frame(subtitle_file_frame, style="TFrame")
+        subtitle_path_frame.pack(fill=tk.X, pady=2)
+
+        self.subtitle_path_entry = ttk.Entry(subtitle_path_frame, textvariable=self.subtitle_path_var, state="readonly")
+        self.subtitle_path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        self.subtitle_browse_button = ttk.Button(subtitle_path_frame, text="Browse", command=self.select_subtitle_file)
+        self.subtitle_browse_button.pack(side=tk.RIGHT)
+
+        # إعدادات الخط
+        font_frame = ttk.LabelFrame(subtitle_main_frame, text="Font Settings", padding=5)
+        font_frame.pack(fill=tk.X, pady=5)
+
+        # حجم الخط
+        font_size_frame = ttk.Frame(font_frame, style="TFrame")
+        font_size_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(font_size_frame, text="Font Size:").pack(side=tk.LEFT)
+        self.subtitle_font_size_spinbox = ttk.Spinbox(font_size_frame, from_=12, to=72, textvariable=self.subtitle_font_size_var, width=10)
+        self.subtitle_font_size_spinbox.pack(side=tk.RIGHT)
+
+        # لون الخط
+        font_color_frame = ttk.Frame(font_frame, style="TFrame")
+        font_color_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(font_color_frame, text="Font Color:").pack(side=tk.LEFT)
+        self.subtitle_font_color_combo = ttk.Combobox(font_color_frame, textvariable=self.subtitle_font_color_var,
+                                                     values=["white", "black", "yellow", "red", "blue", "green"],
+                                                     state="readonly", width=10)
+        self.subtitle_font_color_combo.pack(side=tk.RIGHT)
+
+        # لون الحدود
+        outline_color_frame = ttk.Frame(font_frame, style="TFrame")
+        outline_color_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(outline_color_frame, text="Outline Color:").pack(side=tk.LEFT)
+        self.subtitle_outline_color_combo = ttk.Combobox(outline_color_frame, textvariable=self.subtitle_outline_color_var,
+                                                        values=["black", "white", "gray", "darkgray"],
+                                                        state="readonly", width=10)
+        self.subtitle_outline_color_combo.pack(side=tk.RIGHT)
+
+        # عرض الحدود
+        outline_width_frame = ttk.Frame(font_frame, style="TFrame")
+        outline_width_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(outline_width_frame, text="Outline Width:").pack(side=tk.LEFT)
+        self.subtitle_outline_width_spinbox = ttk.Spinbox(outline_width_frame, from_=0, to=10, textvariable=self.subtitle_outline_width_var, width=10)
+        self.subtitle_outline_width_spinbox.pack(side=tk.RIGHT)
+
+        # موضع الترجمة
+        position_frame = ttk.Frame(font_frame, style="TFrame")
+        position_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(position_frame, text="Position:").pack(side=tk.LEFT)
+        self.subtitle_position_combo = ttk.Combobox(position_frame, textvariable=self.subtitle_position_var,
+                                                   values=["bottom", "top", "center"],
+                                                   state="readonly", width=10)
+        self.subtitle_position_combo.pack(side=tk.RIGHT)
+
+        # معلومات الملف
+        self.subtitle_info_label = ttk.Label(subtitle_main_frame, text="No subtitle file selected", foreground="gray")
+        self.subtitle_info_label.pack(anchor='w', pady=5)
 
         # إنشاء عرض مراقبة الأداء
         self.performance_options_view = ttk.Frame(self.options_views_container, style="TFrame")
@@ -3271,41 +3707,83 @@ class App(tk.Tk):
         perf_scrollbar.pack(side="right", fill="y")
         self.performance_log.pack(side="left", fill="both", expand=True)
 
-        # إضافة أزرار المعالجة
-        processing_frame = ttk.LabelFrame(left_panel, text="3. بدء المعالجة", padding=10)
+        # Add processing buttons
+        processing_frame = ttk.LabelFrame(left_panel, text="3. Start Processing", padding=10)
         processing_frame.pack(fill=tk.X, padx=5, pady=(10, 5))
 
         buttons_frame = ttk.Frame(processing_frame, style="TFrame")
         buttons_frame.pack(fill=tk.X, pady=5)
 
-        self.start_button = create_arabic_button(buttons_frame, "بدء معالجة الفيديو",
-                                                command=self.start_processing,
-                                                bg=self.BUTTON_COLOR, fg="white",
-                                                font=('Arial', 12, 'bold'),
-                                                pady=10)
+        self.start_button = tk.Button(buttons_frame, text="Start Video Processing",
+                                     command=self.start_processing,
+                                     bg=self.BUTTON_COLOR, fg="white",
+                                     font=('Arial', 12, 'bold'),
+                                     pady=10)
         self.start_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
 
-        self.stop_button = create_arabic_button(buttons_frame, "إيقاف المعالجة",
-                                               command=self.stop_processing,
-                                               bg="#D13438", fg="white",
-                                               font=('Arial', 12, 'bold'),
-                                               state=tk.DISABLED,
-                                               pady=10)
+        self.stop_button = tk.Button(buttons_frame, text="Stop Processing",
+                                    command=self.stop_processing,
+                                    bg="#D13438", fg="white",
+                                    font=('Arial', 12, 'bold'),
+                                    state=tk.DISABLED,
+                                    pady=10)
         self.stop_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
 
     def select_input(self):
         from tkinter import filedialog
-        path = filedialog.askopenfilename(title="اختر فيديو", filetypes=[("ملفات الفيديو", "*.mp4 *.mov *.avi"), ("كل الملفات", "*.*")])
+        path = filedialog.askopenfilename(title="Select Video", filetypes=[("Video Files", "*.mp4 *.mov *.avi"), ("All Files", "*.*")])
         if path:
             self.input_path_var.set(os.path.basename(path))
             self.settings['input_path'] = path
 
     def select_output(self):
         from tkinter import filedialog
-        path = filedialog.asksaveasfilename(title="حفظ باسم", defaultextension=".mp4", filetypes=[("ملف MP4", "*.mp4")])
+        path = filedialog.asksaveasfilename(title="Save As", defaultextension=".mp4", filetypes=[("MP4 File", "*.mp4")])
         if path:
             self.output_path_var.set(os.path.basename(path))
             self.settings['output_path'] = path
+
+    def select_subtitle_file(self):
+        """Select subtitle file"""
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="Select Subtitle File",
+            filetypes=[("Subtitle Files", "*.srt"), ("All Files", "*.*")]
+        )
+        if path:
+            # Validate the file
+            is_valid, message = SubtitleProcessor.validate_srt_file(path)
+
+            if is_valid:
+                self.subtitle_path_var.set(path)
+                # Convert message to English
+                english_message = self._translate_validation_message(message)
+                self.subtitle_info_label.config(text=f"✅ {english_message}", foreground="green")
+
+                # Automatically enable subtitles when a valid file is selected
+                self.subtitle_enabled_var.set(True)
+                self._update_subtitle_controls()
+            else:
+                # Convert error message to English
+                english_error = self._translate_validation_message(message)
+                self.subtitle_info_label.config(text=f"❌ {english_error}", foreground="red")
+                messagebox.showerror("Subtitle File Error", english_error)
+
+    def _translate_validation_message(self, arabic_message):
+        """Convert validation messages from Arabic to English"""
+        translations = {
+            "الملف غير موجود": "File not found",
+            "الملف ليس من نوع SRT": "File is not an SRT file",
+            "الملف لا يحتوي على ترجمات صالحة": "File contains no valid subtitles",
+            "ملف صالح يحتوي على": "Valid file containing",
+            "ترجمة": "subtitle(s)"
+        }
+
+        english_message = arabic_message
+        for arabic, english in translations.items():
+            english_message = english_message.replace(arabic, english)
+
+        return english_message
 
     def load_settings(self):
         """Loads all settings from the JSON file."""
@@ -3323,11 +3801,41 @@ class App(tk.Tk):
                 if hasattr(self, 'compression_enabled_var'):
                     self.compression_enabled_var.set(loaded_settings.get('compression_enabled', False))
                 if hasattr(self, 'quality_preset_var'):
-                    self.quality_preset_var.set(loaded_settings.get('quality_preset', 'medium'))
+                    self.quality_preset_var.set(loaded_settings.get('quality_preset', '1080p (Full HD) - Balanced'))
 
-                print("تم تحميل الإعدادات المحفوظة.")
+                # Load subtitle settings
+                if hasattr(self, 'subtitle_enabled_var'):
+                    self.subtitle_enabled_var.set(loaded_settings.get('subtitle_enabled', False))
+                if hasattr(self, 'subtitle_path_var'):
+                    self.subtitle_path_var.set(loaded_settings.get('subtitle_path', ''))
+                if hasattr(self, 'subtitle_font_size_var'):
+                    self.subtitle_font_size_var.set(str(loaded_settings.get('subtitle_font_size', 24)))
+                if hasattr(self, 'subtitle_font_color_var'):
+                    self.subtitle_font_color_var.set(loaded_settings.get('subtitle_font_color', 'white'))
+                if hasattr(self, 'subtitle_outline_color_var'):
+                    self.subtitle_outline_color_var.set(loaded_settings.get('subtitle_outline_color', 'black'))
+                if hasattr(self, 'subtitle_outline_width_var'):
+                    self.subtitle_outline_width_var.set(str(loaded_settings.get('subtitle_outline_width', 2)))
+                if hasattr(self, 'subtitle_position_var'):
+                    self.subtitle_position_var.set(loaded_settings.get('subtitle_position', 'bottom'))
+
+                # تحميل إعدادات خلفية الترجمة
+                if hasattr(self, 'subtitle_background_enabled_var'):
+                    self.subtitle_background_enabled_var.set(loaded_settings.get('subtitle_background_enabled', False))
+                if hasattr(self, 'subtitle_background_color_var'):
+                    self.subtitle_background_color_var.set(loaded_settings.get('subtitle_background_color', 'black'))
+                if hasattr(self, 'subtitle_background_opacity_var'):
+                    self.subtitle_background_opacity_var.set(loaded_settings.get('subtitle_background_opacity', 80))
+                if hasattr(self, 'subtitle_background_padding_var'):
+                    self.subtitle_background_padding_var.set(loaded_settings.get('subtitle_background_padding', 10))
+
+                # Update control states after loading
+                self._update_compression_controls()
+                self._update_subtitle_controls()
+
+                print("Settings loaded successfully.")
         except Exception as e:
-            print(f"لم يتم العثور على إعدادات محفوظة أو حدث خطأ: {e}")
+            print(f"No saved settings found or error occurred: {e}")
 
     def save_settings(self):
         """حفظ جميع الإعدادات في ملف JSON"""
@@ -3353,6 +3861,32 @@ class App(tk.Tk):
             if hasattr(self, 'processing_mode_var'):
                 settings_to_save['processing_mode'] = self.processing_mode_var.get()
 
+            # حفظ إعدادات الترجمة
+            if hasattr(self, 'subtitle_enabled_var'):
+                settings_to_save['subtitle_enabled'] = self.subtitle_enabled_var.get()
+            if hasattr(self, 'subtitle_path_var'):
+                settings_to_save['subtitle_path'] = self.subtitle_path_var.get()
+            if hasattr(self, 'subtitle_font_size_var'):
+                settings_to_save['subtitle_font_size'] = int(self.subtitle_font_size_var.get() or 24)
+            if hasattr(self, 'subtitle_font_color_var'):
+                settings_to_save['subtitle_font_color'] = self.subtitle_font_color_var.get()
+            if hasattr(self, 'subtitle_outline_color_var'):
+                settings_to_save['subtitle_outline_color'] = self.subtitle_outline_color_var.get()
+            if hasattr(self, 'subtitle_outline_width_var'):
+                settings_to_save['subtitle_outline_width'] = int(self.subtitle_outline_width_var.get() or 2)
+            if hasattr(self, 'subtitle_position_var'):
+                settings_to_save['subtitle_position'] = self.subtitle_position_var.get()
+
+            # حفظ إعدادات خلفية الترجمة
+            if hasattr(self, 'subtitle_background_enabled_var'):
+                settings_to_save['subtitle_background_enabled'] = self.subtitle_background_enabled_var.get()
+            if hasattr(self, 'subtitle_background_color_var'):
+                settings_to_save['subtitle_background_color'] = self.subtitle_background_color_var.get()
+            if hasattr(self, 'subtitle_background_opacity_var'):
+                settings_to_save['subtitle_background_opacity'] = int(self.subtitle_background_opacity_var.get() or 80)
+            if hasattr(self, 'subtitle_background_padding_var'):
+                settings_to_save['subtitle_background_padding'] = int(self.subtitle_background_padding_var.get() or 10)
+
             # حفظ مسارات الملفات
             if hasattr(self, 'settings'):
                 if 'input_path' in self.settings:
@@ -3366,14 +3900,68 @@ class App(tk.Tk):
             with open(self.settings_file, 'w', encoding='utf-8') as f:
                 json.dump(settings_to_save, f, ensure_ascii=False, indent=2)
 
-            print("تم حفظ الإعدادات بنجاح.")
+            print("Settings saved successfully.")
 
         except Exception as e:
-            print(f"خطأ في حفظ الإعدادات: {e}")
+            print(f"Error saving settings: {e}")
+
+    def save_settings_manual(self):
+        """Manual save settings with user feedback"""
+        try:
+            self.save_settings()
+            messagebox.showinfo("Settings Saved", "Settings have been saved successfully!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save settings: {e}")
+
+    def reset_to_default(self):
+        """Reset all settings to default values"""
+        try:
+            # Ask for confirmation
+            if messagebox.askyesno("Reset Settings", "Are you sure you want to reset all settings to default values?"):
+                # Reset all entry fields
+                if hasattr(self, 'entries'):
+                    for name, var in self.entries.items():
+                        if name in self.default_values:
+                            var.set(str(self.default_values[name]))
+
+                # Reset boolean variables
+                if hasattr(self, 'mirror_enabled_var'):
+                    self.mirror_enabled_var.set(self.default_values['mirror_enabled'])
+                if hasattr(self, 'compression_enabled_var'):
+                    self.compression_enabled_var.set(self.default_values['compression_enabled'])
+                if hasattr(self, 'subtitle_enabled_var'):
+                    self.subtitle_enabled_var.set(self.default_values['subtitle_enabled'])
+
+                # Reset string variables
+                if hasattr(self, 'processing_mode_var'):
+                    self.processing_mode_var.set(self.default_values['processing_mode'])
+                if hasattr(self, 'quality_preset_var'):
+                    self.quality_preset_var.set(self.default_values['quality_preset'])
+                if hasattr(self, 'subtitle_path_var'):
+                    self.subtitle_path_var.set(self.default_values['subtitle_path'])
+                if hasattr(self, 'subtitle_font_size_var'):
+                    self.subtitle_font_size_var.set(str(self.default_values['subtitle_font_size']))
+                if hasattr(self, 'subtitle_font_color_var'):
+                    self.subtitle_font_color_var.set(self.default_values['subtitle_font_color'])
+                if hasattr(self, 'subtitle_outline_color_var'):
+                    self.subtitle_outline_color_var.set(self.default_values['subtitle_outline_color'])
+                if hasattr(self, 'subtitle_outline_width_var'):
+                    self.subtitle_outline_width_var.set(str(self.default_values['subtitle_outline_width']))
+                if hasattr(self, 'subtitle_position_var'):
+                    self.subtitle_position_var.set(self.default_values['subtitle_position'])
+
+                # Update control states
+                self._update_compression_controls()
+                self._update_subtitle_controls()
+
+                messagebox.showinfo("Reset Complete", "All settings have been reset to default values!")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to reset settings: {e}")
 
     def start_processing(self):
         if not self.settings.get('input_path') or not self.settings.get('output_path'):
-            ArabicText.messagebox_error("خطأ", "الرجاء اختيار ملف الإدخال ومكان الحفظ أولاً.")
+            messagebox.showerror("Error", "Please select input file and output location first.")
             return
 
         try:
@@ -3397,29 +3985,55 @@ class App(tk.Tk):
             if hasattr(self, 'quality_preset_var'):
                 self.settings['quality_preset'] = self.quality_preset_var.get()
 
+            # إعدادات الترجمة
+            if hasattr(self, 'subtitle_enabled_var'):
+                self.settings['subtitle_enabled'] = self.subtitle_enabled_var.get()
+            if hasattr(self, 'subtitle_path_var'):
+                self.settings['subtitle_path'] = self.subtitle_path_var.get()
+            if hasattr(self, 'subtitle_font_size_var'):
+                self.settings['subtitle_font_size'] = int(self.subtitle_font_size_var.get() or 24)
+            if hasattr(self, 'subtitle_font_color_var'):
+                self.settings['subtitle_font_color'] = self.subtitle_font_color_var.get()
+            if hasattr(self, 'subtitle_outline_color_var'):
+                self.settings['subtitle_outline_color'] = self.subtitle_outline_color_var.get()
+            if hasattr(self, 'subtitle_outline_width_var'):
+                self.settings['subtitle_outline_width'] = int(self.subtitle_outline_width_var.get() or 2)
+            if hasattr(self, 'subtitle_position_var'):
+                self.settings['subtitle_position'] = self.subtitle_position_var.get()
+
+            # إعدادات خلفية الترجمة
+            if hasattr(self, 'subtitle_background_enabled_var'):
+                self.settings['subtitle_background_enabled'] = self.subtitle_background_enabled_var.get()
+            if hasattr(self, 'subtitle_background_color_var'):
+                self.settings['subtitle_background_color'] = self.subtitle_background_color_var.get()
+            if hasattr(self, 'subtitle_background_opacity_var'):
+                self.settings['subtitle_background_opacity'] = int(self.subtitle_background_opacity_var.get() or 80)
+            if hasattr(self, 'subtitle_background_padding_var'):
+                self.settings['subtitle_background_padding'] = int(self.subtitle_background_padding_var.get() or 10)
+
         except (ValueError, KeyError) as e:
-            ArabicText.messagebox_error("خطأ في الإدخال", f"الرجاء إدخال أرقام صالحة في الخيارات.\nالخطأ: {e}")
+            messagebox.showerror("Input Error", f"Please enter valid numbers in the options.\nError: {e}")
             return
 
-        # تعطيل أزرار المعالجة
+        # Disable processing buttons
         if hasattr(self, 'start_button'):
             self.start_button.config(state=tk.DISABLED)
         if hasattr(self, 'stop_button'):
             self.stop_button.config(state=tk.NORMAL)
 
-        # إعادة تعيين حدث الإلغاء
+        # Reset cancel event
         self.cancel_event.clear()
 
-        # بدء المعالجة في thread منفصل
+        # Start processing in separate thread
         import threading
         processing_thread = threading.Thread(target=self._processing_thread, daemon=True)
         processing_thread.start()
 
     def _processing_thread(self):
         try:
-            self.update_status("بدء معالجة الفيديو...")
+            self.update_status("Starting video processing...")
 
-            # استخدام المعالج المتقدم
+            # Use advanced processor
             adaptive_controller = AdaptiveProcessingController()
             long_processor = LongVideoProcessor(adaptive_controller)
 
@@ -3432,18 +4046,18 @@ class App(tk.Tk):
             )
 
             if success:
-                self.update_status("تمت معالجة الفيديو بنجاح!")
-                ArabicText.messagebox_info("نجح", "تمت معالجة الفيديو بنجاح!")
+                self.update_status("Video processing completed successfully!")
+                messagebox.showinfo("Success", "Video processing completed successfully!")
             else:
-                self.update_status("فشلت معالجة الفيديو.")
+                self.update_status("Video processing failed.")
                 if not self.cancel_event.is_set():
-                    ArabicText.messagebox_error("خطأ", "فشلت معالجة الفيديو. تحقق من الرسائل للتفاصيل.")
+                    messagebox.showerror("Error", "Video processing failed. Check messages for details.")
 
         except Exception as e:
-            self.update_status(f"خطأ في المعالجة: {e}")
-            ArabicText.messagebox_error("خطأ", f"حدث خطأ أثناء المعالجة:\n{e}")
+            self.update_status(f"Processing error: {e}")
+            messagebox.showerror("Error", f"An error occurred during processing:\n{e}")
         finally:
-            # إعادة تفعيل الأزرار
+            # Re-enable buttons
             if hasattr(self, 'start_button'):
                 self.start_button.config(state=tk.NORMAL)
             if hasattr(self, 'stop_button'):
@@ -3515,7 +4129,7 @@ class App(tk.Tk):
             child.pack_forget()
 
         # إعادة تعيين ألوان الأزرار
-        for button in [self.proc_opts_button, self.comp_opts_button, self.perf_opts_button]:
+        for button in [self.proc_opts_button, self.comp_opts_button, self.subtitle_opts_button, self.perf_opts_button]:
             button.configure(style="ViewToggle.TButton")
 
         # عرض العرض المطلوب وتمييز الزر
@@ -3526,6 +4140,10 @@ class App(tk.Tk):
             if hasattr(self, 'compression_options_view'):
                 self.compression_options_view.pack(fill=tk.BOTH, expand=True)
             self.comp_opts_button.configure(style="ViewToggleActive.TButton")
+        elif view_name == 'subtitle':
+            if hasattr(self, 'subtitle_options_view'):
+                self.subtitle_options_view.pack(fill=tk.BOTH, expand=True)
+            self.subtitle_opts_button.configure(style="ViewToggleActive.TButton")
         elif view_name == 'perf':
             if hasattr(self, 'performance_options_view'):
                 self.performance_options_view.pack(fill=tk.BOTH, expand=True)
@@ -3880,41 +4498,76 @@ class App(tk.Tk):
         if editor.saved:
             self.settings['overlays'] = editor.get_overlays()
             self.settings['logo_preview_dimensions'] = editor.get_preview_dimensions()
-            self.update_status(f"تم حفظ {len(self.settings['overlays'])} عنصر/عناصر من محرر المعاينة.")
+            self.update_status(f"Saved {len(self.settings['overlays'])} element(s) from the visual editor.")
 
     def stop_processing(self):
-        self.update_status("جاري طلب إيقاف المعالجة...")
+        self.update_status("Requesting to stop processing...")
         self.cancel_event.set()
         self.stop_button.config(state=tk.DISABLED)
 
     def _update_compression_controls(self, event=None):
-        """تحديث حالة عناصر التحكم في الضغط"""
+        """Update compression control states"""
         is_enabled = self.compression_enabled_var.get()
 
-        # تفعيل/تعطيل عناصر التحكم في الضغط
+        # Enable/disable compression controls
         try:
-            # تحديث حالة قائمة إعدادات الجودة
+            # Update quality preset combo state
             if hasattr(self, 'quality_preset_combo'):
-                state = tk.NORMAL if is_enabled else tk.DISABLED
+                state = "readonly" if is_enabled else "disabled"
                 self.quality_preset_combo.config(state=state)
 
-            # تحديث أي عناصر أخرى متعلقة بالضغط
+            # Update other compression-related elements
             if hasattr(self, 'compression_options_view'):
                 try:
                     for child in self.compression_options_view.winfo_children():
                         if hasattr(child, 'winfo_children'):
                             for subchild in child.winfo_children():
-                                if isinstance(subchild, (ttk.Combobox, ttk.Scale, ttk.Entry, ttk.Checkbutton)):
+                                if isinstance(subchild, (ttk.Combobox, ttk.Scale, ttk.Entry)):
                                     try:
-                                        subchild.config(state=tk.NORMAL if is_enabled else tk.DISABLED)
+                                        if isinstance(subchild, ttk.Combobox):
+                                            subchild.config(state="readonly" if is_enabled else "disabled")
+                                        else:
+                                            subchild.config(state="normal" if is_enabled else "disabled")
                                     except:
-                                        pass  # تجاهل الأخطاء في تحديث العناصر
+                                        pass  # Ignore errors in updating elements
                 except:
-                    pass  # تجاهل أخطاء الوصول للعناصر
+                    pass  # Ignore access errors
 
         except Exception as e:
-            print(f"خطأ في تحديث عناصر التحكم في الضغط: {e}")
-            # لا نريد أن يتوقف التطبيق بسبب هذا الخطأ
+            print(f"Error updating compression controls: {e}")
+            # Don't let this error stop the application
+
+    def _update_subtitle_controls(self, event=None):
+        """تحديث حالة عناصر التحكم في الترجمة"""
+        is_enabled = self.subtitle_enabled_var.get()
+
+        # تفعيل/تعطيل عناصر التحكم في الترجمة
+        try:
+            controls = [
+                'subtitle_path_entry', 'subtitle_browse_button',
+                'subtitle_font_size_spinbox', 'subtitle_font_color_combo',
+                'subtitle_outline_color_combo', 'subtitle_outline_width_spinbox',
+                'subtitle_position_combo'
+            ]
+
+            state = "normal" if is_enabled else "disabled"
+            readonly_state = "readonly" if is_enabled else "disabled"
+
+            for control_name in controls:
+                if hasattr(self, control_name):
+                    control = getattr(self, control_name)
+                    try:
+                        if isinstance(control, (ttk.Combobox, ttk.Entry)) and control_name.endswith('_combo'):
+                            control.config(state=readonly_state)
+                        elif isinstance(control, ttk.Entry) and 'path' in control_name:
+                            control.config(state="readonly" if is_enabled else "disabled")
+                        else:
+                            control.config(state=state)
+                    except:
+                        pass
+
+        except Exception as e:
+            print(f"خطأ في تحديث عناصر التحكم في الترجمة: {e}")
 
     def toggle_simple_compression_widgets(self):
         """تفعيل/تعطيل عناصر التحكم البسيطة في الضغط"""
@@ -3930,12 +4583,13 @@ class OverlayEditorWindow(tk.Toplevel):
     def __init__(self, parent, video_dimensions, first_frame, existing_overlays, preview_dims):
         super().__init__(parent)
         self.parent = parent
+        self.parent_app = parent  # Reference to main app for subtitle settings
         self.video_w, self.video_h = video_dimensions
         self.first_frame = first_frame
         self.existing_overlays = existing_overlays
         self.saved = False
 
-        self.title("معاينة وإضافة عناصر")
+        self.title("Visual Element & Subtitle Editor")
         self.configure(bg=App.BG_COLOR)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -3944,16 +4598,43 @@ class OverlayEditorWindow(tk.Toplevel):
         self.disp_w, self.disp_h = int(self.video_w * scale), int(self.video_h * scale)
         self.scale_x = self.video_w / self.disp_w
         self.scale_y = self.video_h / self.disp_h
-        
-        self.geometry(f"{self.disp_w + 40}x{self.disp_h + 120}")
+
+        # Make window larger to ensure all controls are visible
+        window_width = max(1400, self.disp_w + 500)
+        window_height = max(900, self.disp_h + 300)
+        self.geometry(f"{window_width}x{window_height}")
+        self.minsize(1200, 700)  # Set minimum size to ensure buttons are always visible
+
+        # Center the window on screen
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() // 2) - (window_width // 2)
+        y = (self.winfo_screenheight() // 2) - (window_height // 2)
+        self.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
         self._overlays = {}
+        self._subtitles = {}  # Store subtitle elements
         self._selected_id = None
         self._drag_data = {}
         self.brush_size = tk.IntVar(value=30)
 
+        # Subtitle editing variables
+        self.subtitle_text_var = tk.StringVar(value="Sample Subtitle Text")
+        self.subtitle_font_size_var = tk.IntVar(value=24)
+        self.subtitle_font_color_var = tk.StringVar(value="white")
+        self.subtitle_outline_color_var = tk.StringVar(value="black")
+        self.subtitle_outline_width_var = tk.IntVar(value=2)
+        self.subtitle_background_enabled_var = tk.BooleanVar(value=False)
+        self.subtitle_background_color_var = tk.StringVar(value="black")
+        self.subtitle_background_opacity_var = tk.IntVar(value=80)
+        self.subtitle_background_padding_var = tk.IntVar(value=10)
+
         self.create_widgets()
         self.load_overlays()
+        # Initialize selection status and color previews
+        self.update_selection_status()
+        self.update_color_previews()
+        # Force initial preview update
+        self.after(100, self.force_update_preview)
     
     def get_overlays(self):
         return list(self._overlays.values())
@@ -3962,60 +4643,913 @@ class OverlayEditorWindow(tk.Toplevel):
         return {'w': self.disp_w, 'h': self.disp_h}
 
     def create_widgets(self):
-        from PIL import Image, ImageTk
+        from PIL import Image, ImageTk, ImageDraw, ImageFont
         frame_rgb = cv2.cvtColor(self.first_frame, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(frame_rgb)
         resample = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS', Image.BICUBIC)
         self.tk_img = ImageTk.PhotoImage(pil_img.resize((self.disp_w, self.disp_h), resample))
 
-        
-        main_canvas = tk.Canvas(self, bg=App.BG_COLOR, highlightthickness=0)
-        vscroll = ttk.Scrollbar(self, orient="vertical", command=main_canvas.yview)
-        main_canvas.configure(yscrollcommand=vscroll.set)
-        vscroll.pack(side="right", fill="y")
-        main_canvas.pack(side="left", fill="both", expand=True)
-        content_frame = ttk.Frame(main_canvas, style="TFrame")
-        content_id = main_canvas.create_window((0, 0), window=content_frame, anchor="nw")
-        def _on_configure(event):
-            main_canvas.configure(scrollregion=main_canvas.bbox("all"))
-        content_frame.bind("<Configure>", _on_configure)
-        def _on_canvas_configure(event):
-            main_canvas.itemconfig(content_id, width=event.width)
-        main_canvas.bind("<Configure>", _on_canvas_configure)
-        def _on_mousewheel(event):
-            main_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        main_canvas.bind("<MouseWheel>", _on_mousewheel)
+        # Create main horizontal layout
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        
-        toolbar = ttk.Frame(content_frame)
-        toolbar.pack(fill=tk.X, padx=10, pady=(5, 0))
-        self.current_mode = tk.StringVar(value="move")
-        modes = [("تحريك/تحديد", "move"), ("تجزئة بكسلات", "pixelate"), ("مربع", "rect"), ("دائرة", "circle")]
-        style = ttk.Style(self)
-        style.configure("Tool.TRadiobutton", background=App.VIEW_BUTTON_BG, foreground="white", padding=6, font=("SegoeUI", 9, "bold"))
-        style.map("Tool.TRadiobutton", background=[('active', App.BUTTON_ACTIVE_COLOR), ('selected', App.BUTTON_COLOR)])
-        for text, mode in modes:
-            ttk.Radiobutton(toolbar, text=text, variable=self.current_mode, value=mode, style="Tool.TRadiobutton").pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
-        
-        brush_frame = ttk.Frame(content_frame)
-        brush_frame.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Label(brush_frame, text="حجم الفرشاة:").pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Scale(brush_frame, from_=10, to=150, orient=tk.HORIZONTAL, variable=self.brush_size).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Entry(brush_frame, textvariable=self.brush_size, width=5).pack(side=tk.LEFT, padx=5)
-        
-        self.canvas = tk.Canvas(content_frame, width=self.disp_w, height=self.disp_h, bg='black', highlightthickness=0)
-        self.canvas.pack(pady=10, padx=10)
+        # Left side - Video preview and controls
+        left_frame = ttk.Frame(main_frame)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Add simple welcome message
+        welcome_frame = tk.Frame(left_frame, bg="#0078D4", relief=tk.RAISED, bd=2)
+        welcome_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        welcome_label = tk.Label(welcome_frame, text="🎬 Video Preview",
+                                bg="#0078D4", fg="white", font=("Arial", 14, "bold"))
+        welcome_label.pack(pady=5)
+
+        instructions_label = tk.Label(welcome_frame,
+                                    text="Use the controls on the right panel to edit elements",
+                                    bg="#0078D4", fg="white", font=("Arial", 10))
+        instructions_label.pack(pady=(0, 5))
+
+        # Right side - Subtitle editor with scrollbar
+        right_container = ttk.Frame(main_frame)
+        right_container.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
+
+        # Create scrollable frame for subtitle editor
+        right_canvas = tk.Canvas(right_container, width=300, bg=App.BG_COLOR, highlightthickness=0)
+        right_scrollbar = ttk.Scrollbar(right_container, orient="vertical", command=right_canvas.yview)
+        right_canvas.configure(yscrollcommand=right_scrollbar.set)
+
+        right_scrollbar.pack(side="right", fill="y")
+        right_canvas.pack(side="left", fill="both", expand=True)
+
+        right_frame = ttk.LabelFrame(right_canvas, text="Element Editor & Subtitle Controls", padding=10)
+        right_canvas_window = right_canvas.create_window((0, 0), window=right_frame, anchor="nw")
+
+        def _on_right_configure(event):
+            right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+        def _on_right_canvas_configure(event):
+            right_canvas.itemconfig(right_canvas_window, width=event.width)
+        def _on_right_mousewheel(event):
+            right_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+        right_frame.bind("<Configure>", _on_right_configure)
+        right_canvas.bind("<Configure>", _on_right_canvas_configure)
+        right_canvas.bind("<MouseWheel>", _on_right_mousewheel)
+
+        # Create main controls and subtitle editor
+        self.create_main_controls(right_frame)
+        self.create_subtitle_editor(right_frame)
+
+
+
+
+        # Create canvas with scrollbars
+        canvas_frame = ttk.Frame(left_frame)
+        canvas_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        # Create scrollbars
+        h_scrollbar = ttk.Scrollbar(canvas_frame, orient="horizontal")
+        v_scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical")
+
+        # Create canvas with scrolling capability
+        self.canvas = tk.Canvas(canvas_frame, bg='black', highlightthickness=0,
+                               xscrollcommand=h_scrollbar.set,
+                               yscrollcommand=v_scrollbar.set)
+
+        # Configure scrollbars
+        h_scrollbar.config(command=self.canvas.xview)
+        v_scrollbar.config(command=self.canvas.yview)
+
+        # Pack scrollbars and canvas
+        h_scrollbar.pack(side="bottom", fill="x")
+        v_scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        # Set canvas size and scroll region
+        self.canvas.configure(width=min(self.disp_w, 800), height=min(self.disp_h, 600))
+        self.canvas.configure(scrollregion=(0, 0, self.disp_w, self.disp_h))
+
+        # Create image on canvas
         self.canvas.create_image(0, 0, anchor='nw', image=self.tk_img, tags="bg_image")
-        
-        btn_frame = ttk.Frame(content_frame)
-        btn_frame.pack(pady=10, fill=tk.X, padx=10)
-        ttk.Button(btn_frame, text="إضافة شعار...", command=self.add_logo).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="حذف المحدد", command=self.delete_selected).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="حفظ وإغلاق", command=self.save_and_close).pack(side=tk.RIGHT, padx=5)
-        
+
+
+
         self.canvas.bind('<ButtonPress-1>', self.on_press)
         self.canvas.bind('<B1-Motion>', self.on_motion)
         self.canvas.bind('<ButtonRelease-1>', self.on_release)
+
+        # Add mouse wheel scrolling support
+        self.canvas.bind("<MouseWheel>", self.on_mousewheel)
+        self.canvas.bind("<Shift-MouseWheel>", self.on_shift_mousewheel)
+        self.canvas.bind("<Control-MouseWheel>", self.on_ctrl_mousewheel)
+
+        # Add keyboard scrolling support
+        self.canvas.bind("<Key>", self.on_key_press)
+        self.canvas.focus_set()  # Allow canvas to receive keyboard events
+
+    def create_main_controls(self, parent):
+        """Create main control buttons and tools"""
+
+        # Export Options Section
+        export_options_frame = ttk.LabelFrame(parent, text="📤 Export Options", padding=10)
+        export_options_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # Option to disable subtitle overlays during export
+        self.disable_subtitle_overlays_var = tk.BooleanVar(value=False)
+        disable_subtitles_check = ttk.Checkbutton(export_options_frame,
+                                                 text="Disable subtitle overlays in final video (to avoid conflict with SRT subtitles)",
+                                                 variable=self.disable_subtitle_overlays_var)
+        disable_subtitles_check.pack(anchor="w", pady=2)
+
+        # Option to disable all overlays
+        self.disable_all_overlays_var = tk.BooleanVar(value=False)
+        disable_all_check = ttk.Checkbutton(export_options_frame,
+                                           text="Disable all overlays in final video (preview only)",
+                                           variable=self.disable_all_overlays_var)
+        disable_all_check.pack(anchor="w", pady=2)
+
+        # Main Action Buttons Section
+        main_buttons_frame = ttk.LabelFrame(parent, text="🎬 Main Controls", padding=10)
+        main_buttons_frame.pack(fill=tk.X, pady=(0, 15))
+
+        # Add Logo button
+        add_logo_btn = tk.Button(main_buttons_frame, text="🖼️ Add Logo", command=self.add_logo,
+                                bg="#0078D4", fg="white", font=("Arial", 11, "bold"),
+                                relief=tk.RAISED, bd=2, padx=20, pady=10)
+        add_logo_btn.pack(fill=tk.X, pady=2)
+        ToolTip(add_logo_btn, "إضافة شعار أو صورة إلى الفيديو")
+
+        # Delete Selected button
+        delete_btn = tk.Button(main_buttons_frame, text="🗑️ Delete Selected", command=self.delete_selected,
+                              bg="#D13438", fg="white", font=("Arial", 11, "bold"),
+                              relief=tk.RAISED, bd=2, padx=20, pady=10)
+        delete_btn.pack(fill=tk.X, pady=2)
+        ToolTip(delete_btn, "حذف العنصر المحدد")
+
+        # Apply Changes button
+        apply_btn = tk.Button(main_buttons_frame, text="✅ Apply Changes", command=self.apply_changes,
+                             bg="#107C10", fg="white", font=("Arial", 11, "bold"),
+                             relief=tk.RAISED, bd=2, padx=20, pady=10)
+        apply_btn.pack(fill=tk.X, pady=2)
+        ToolTip(apply_btn, "تطبيق التغييرات دون إغلاق النافذة")
+
+        # Save & Close button
+        save_close_btn = tk.Button(main_buttons_frame, text="💾 Save & Close", command=self.save_and_close,
+                                  bg="#FF8C00", fg="white", font=("Arial", 11, "bold"),
+                                  relief=tk.RAISED, bd=2, padx=20, pady=10)
+        save_close_btn.pack(fill=tk.X, pady=2)
+        ToolTip(save_close_btn, "حفظ التغييرات وإغلاق النافذة")
+
+        # Editing Tools Section
+        tools_frame = ttk.LabelFrame(parent, text="🛠️ Editing Tools", padding=10)
+        tools_frame.pack(fill=tk.X, pady=(0, 15))
+
+        self.current_mode = tk.StringVar(value="move")
+        modes = [
+            ("🖱️ Move/Select", "move"),
+            ("🔲 Pixelate", "pixelate"),
+            ("⬜ Rectangle", "rect"),
+            ("⭕ Circle", "circle"),
+            ("📝 Subtitle", "subtitle")
+        ]
+
+        for text, mode in modes:
+            btn = tk.Radiobutton(tools_frame, text=text, variable=self.current_mode, value=mode,
+                               bg="#2D2D2D", fg="white", selectcolor="#0078D4",
+                               font=("Arial", 10, "bold"), relief=tk.RAISED, bd=1,
+                               padx=10, pady=8, indicatoron=0)
+            btn.pack(fill=tk.X, pady=1)
+
+        # Brush Settings Section
+        brush_frame = ttk.LabelFrame(parent, text="🖌️ Brush Settings", padding=10)
+        brush_frame.pack(fill=tk.X, pady=(0, 15))
+
+        tk.Label(brush_frame, text="Brush Size:", font=("Arial", 10, "bold")).pack(anchor="w")
+
+        brush_scale = tk.Scale(brush_frame, from_=10, to=150, orient=tk.HORIZONTAL,
+                              variable=self.brush_size, bg="#f0f0f0",
+                              highlightthickness=0, length=250)
+        brush_scale.pack(fill=tk.X, pady=5)
+
+        brush_entry = tk.Entry(brush_frame, textvariable=self.brush_size, width=10,
+                              font=("Arial", 10), justify="center")
+        brush_entry.pack(pady=2)
+
+        # Zoom Controls Section
+        zoom_frame = ttk.LabelFrame(parent, text="🔍 Zoom Controls", padding=10)
+        zoom_frame.pack(fill=tk.X, pady=(0, 15))
+
+        # Zoom level display
+        if not hasattr(self, 'zoom_level'):
+            self.zoom_level = 1.0
+        self.zoom_label = tk.Label(zoom_frame, text=f"Zoom: {int(self.zoom_level * 100)}%",
+                                  font=("Arial", 12, "bold"))
+        self.zoom_label.pack(pady=5)
+
+        # Zoom buttons
+        tk.Button(zoom_frame, text="🔍+ Zoom In", command=self.zoom_in,
+                 bg="#555555", fg="white", font=("Arial", 10, "bold"),
+                 relief=tk.RAISED, bd=1, padx=15, pady=5).pack(fill=tk.X, pady=1)
+
+        tk.Button(zoom_frame, text="🔍- Zoom Out", command=self.zoom_out,
+                 bg="#555555", fg="white", font=("Arial", 10, "bold"),
+                 relief=tk.RAISED, bd=1, padx=15, pady=5).pack(fill=tk.X, pady=1)
+
+        tk.Button(zoom_frame, text="🎯 Reset Zoom", command=self.reset_zoom,
+                 bg="#555555", fg="white", font=("Arial", 10, "bold"),
+                 relief=tk.RAISED, bd=1, padx=15, pady=5).pack(fill=tk.X, pady=1)
+
+    def create_subtitle_editor(self, parent):
+        """Create subtitle editing controls"""
+
+        # Information about subtitle settings
+        info_frame = ttk.LabelFrame(parent, text="ℹ️ Subtitle Settings Info", padding=5)
+        info_frame.pack(fill=tk.X, pady=(0, 10))
+
+        info_text = tk.Text(info_frame, height=3, wrap=tk.WORD, bg="#f0f0f0", relief=tk.FLAT)
+        info_text.pack(fill=tk.X, padx=5, pady=5)
+        info_text.insert('1.0',
+            "📝 These settings will be applied to your SRT subtitle file.\n"
+            "🎨 Adjust font, colors, and background to preview how your SRT subtitles will look.\n"
+            "💾 Click 'Save & Close' to apply these settings to your external subtitle file.")
+        info_text.config(state=tk.DISABLED)
+
+        # Text input (for preview only)
+        text_frame = ttk.LabelFrame(parent, text="Preview Text (for testing only)", padding=5)
+        text_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.subtitle_text_entry = tk.Text(text_frame, height=3, width=30, wrap=tk.WORD)
+        self.subtitle_text_entry.pack(fill=tk.BOTH, expand=True)
+        self.subtitle_text_entry.insert('1.0', "Sample subtitle text for preview")
+        self.subtitle_text_entry.bind('<KeyRelease>', self.on_subtitle_text_change)
+        self.subtitle_text_entry.bind('<Button-1>', self.on_subtitle_text_change)
+        self.subtitle_text_entry.bind('<FocusOut>', self.on_subtitle_text_change)
+
+        # Font settings
+        font_frame = ttk.LabelFrame(parent, text="Font Settings", padding=5)
+        font_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # Font size with scale
+        size_frame = ttk.Frame(font_frame)
+        size_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(size_frame, text="Size (px):").pack(side=tk.LEFT)
+
+        # Use Scale widget for better control
+        self.size_scale = tk.Scale(size_frame, from_=8, to=72, orient=tk.HORIZONTAL,
+                                  variable=self.subtitle_font_size_var,
+                                  command=self.on_font_size_change,
+                                  length=150, bg="#f0f0f0")
+        self.size_scale.pack(side=tk.RIGHT, padx=5)
+
+        # Add entry for precise input
+        self.size_entry = tk.Entry(size_frame, textvariable=self.subtitle_font_size_var,
+                                  width=5, justify="center")
+        self.size_entry.pack(side=tk.RIGHT, padx=2)
+        self.size_entry.bind('<KeyRelease>', lambda e: self.after_idle(self.force_update_preview))
+        self.size_entry.bind('<FocusOut>', lambda e: self.after_idle(self.force_update_preview))
+
+        # Font color
+        color_frame = ttk.Frame(font_frame)
+        color_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(color_frame, text="Font Color:").pack(side=tk.LEFT)
+        self.color_combo = ttk.Combobox(color_frame, textvariable=self.subtitle_font_color_var,
+                                       values=["white", "black", "yellow", "red", "blue", "green", "orange", "purple"],
+                                       state="readonly", width=12)
+        self.color_combo.pack(side=tk.RIGHT)
+        self.color_combo.bind('<<ComboboxSelected>>', self.on_font_color_change)
+
+        # Add color preview
+        self.font_color_preview = tk.Label(color_frame, text="●", font=("Arial", 16),
+                                          fg=self.subtitle_font_color_var.get())
+        self.font_color_preview.pack(side=tk.RIGHT, padx=5)
+
+        # Outline color
+        outline_frame = ttk.Frame(font_frame)
+        outline_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(outline_frame, text="Outline Color:").pack(side=tk.LEFT)
+        self.outline_combo = ttk.Combobox(outline_frame, textvariable=self.subtitle_outline_color_var,
+                                         values=["black", "white", "gray", "darkgray", "red", "blue", "green", "yellow"],
+                                         state="readonly", width=12)
+        self.outline_combo.pack(side=tk.RIGHT)
+        self.outline_combo.bind('<<ComboboxSelected>>', self.on_outline_color_change)
+
+        # Add color preview
+        self.outline_color_preview = tk.Label(outline_frame, text="●", font=("Arial", 16),
+                                             fg=self.subtitle_outline_color_var.get())
+        self.outline_color_preview.pack(side=tk.RIGHT, padx=5)
+
+        # Outline width with scale
+        outline_width_frame = ttk.Frame(font_frame)
+        outline_width_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(outline_width_frame, text="Outline Width (px):").pack(side=tk.LEFT)
+
+        # Use Scale widget for better control
+        self.width_scale = tk.Scale(outline_width_frame, from_=0, to=10, orient=tk.HORIZONTAL,
+                                   variable=self.subtitle_outline_width_var,
+                                   command=self.on_outline_width_change,
+                                   length=150, bg="#f0f0f0")
+        self.width_scale.pack(side=tk.RIGHT, padx=5)
+
+        # Add entry for precise input
+        self.width_entry = tk.Entry(outline_width_frame, textvariable=self.subtitle_outline_width_var,
+                                   width=5, justify="center")
+        self.width_entry.pack(side=tk.RIGHT, padx=2)
+        self.width_entry.bind('<KeyRelease>', lambda e: self.after_idle(self.force_update_preview))
+        self.width_entry.bind('<FocusOut>', lambda e: self.after_idle(self.force_update_preview))
+
+        # Background settings
+        bg_frame = ttk.LabelFrame(parent, text="Background Settings", padding=5)
+        bg_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # Enable background
+        bg_enable_frame = ttk.Frame(bg_frame)
+        bg_enable_frame.pack(fill=tk.X, pady=2)
+        self.bg_enable_check = ttk.Checkbutton(bg_enable_frame, text="Enable Background Box",
+                                              variable=self.subtitle_background_enabled_var,
+                                              command=self.on_background_enable_change)
+        self.bg_enable_check.pack(side=tk.LEFT)
+
+        # Background color
+        bg_color_frame = ttk.Frame(bg_frame)
+        bg_color_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(bg_color_frame, text="Background Color:").pack(side=tk.LEFT)
+        self.bg_color_combo = ttk.Combobox(bg_color_frame, textvariable=self.subtitle_background_color_var,
+                                          values=["black", "white", "gray", "darkgray", "blue", "red", "green", "yellow"],
+                                          state="readonly", width=12)
+        self.bg_color_combo.pack(side=tk.RIGHT)
+        self.bg_color_combo.bind('<<ComboboxSelected>>', lambda e: self.after_idle(self.force_update_preview))
+
+        # Add color preview
+        self.bg_color_preview = tk.Label(bg_color_frame, text="■", font=("Arial", 16),
+                                        fg=self.subtitle_background_color_var.get())
+        self.bg_color_preview.pack(side=tk.RIGHT, padx=5)
+
+        # Background opacity
+        bg_opacity_frame = ttk.Frame(bg_frame)
+        bg_opacity_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(bg_opacity_frame, text="Background Opacity (%):").pack(side=tk.LEFT)
+
+        # Use Scale widget for better control
+        self.opacity_scale = tk.Scale(bg_opacity_frame, from_=10, to=100, orient=tk.HORIZONTAL,
+                                     variable=self.subtitle_background_opacity_var,
+                                     command=self.on_background_opacity_change,
+                                     length=150, bg="#f0f0f0")
+        self.opacity_scale.pack(side=tk.RIGHT, padx=5)
+
+        # Add entry for precise input
+        self.opacity_entry = tk.Entry(bg_opacity_frame, textvariable=self.subtitle_background_opacity_var,
+                                     width=5, justify="center")
+        self.opacity_entry.pack(side=tk.RIGHT, padx=2)
+        self.opacity_entry.bind('<KeyRelease>', lambda e: self.after_idle(self.force_update_preview))
+        self.opacity_entry.bind('<FocusOut>', lambda e: self.after_idle(self.force_update_preview))
+
+        # Background padding
+        bg_padding_frame = ttk.Frame(bg_frame)
+        bg_padding_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(bg_padding_frame, text="Background Padding (px):").pack(side=tk.LEFT)
+
+        # Use Scale widget for better control
+        self.padding_scale = tk.Scale(bg_padding_frame, from_=0, to=50, orient=tk.HORIZONTAL,
+                                     variable=self.subtitle_background_padding_var,
+                                     command=self.on_background_padding_change,
+                                     length=150, bg="#f0f0f0")
+        self.padding_scale.pack(side=tk.RIGHT, padx=5)
+
+        # Add entry for precise input
+        self.padding_entry = tk.Entry(bg_padding_frame, textvariable=self.subtitle_background_padding_var,
+                                     width=5, justify="center")
+        self.padding_entry.pack(side=tk.RIGHT, padx=2)
+        self.padding_entry.bind('<KeyRelease>', lambda e: self.after_idle(self.force_update_preview))
+        self.padding_entry.bind('<FocusOut>', lambda e: self.after_idle(self.force_update_preview))
+
+        # Position controls
+        position_frame = ttk.LabelFrame(parent, text="Position", padding=5)
+        position_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # Selection status
+        self.selection_status_label = tk.Label(position_frame, text="No subtitle selected",
+                                              bg="#FF6B6B", fg="white", font=("Arial", 9, "bold"),
+                                              relief=tk.RAISED, bd=1, padx=5, pady=2)
+        self.selection_status_label.pack(fill=tk.X, pady=2)
+
+        ttk.Button(position_frame, text="Add Subtitle", command=self.add_subtitle).pack(fill=tk.X, pady=2)
+        ttk.Button(position_frame, text="Update Selected", command=self.update_selected_subtitle).pack(fill=tk.X, pady=2)
+        ttk.Button(position_frame, text="Refresh Preview", command=self.update_subtitle_preview).pack(fill=tk.X, pady=2)
+
+        # Preview
+        preview_frame = ttk.LabelFrame(parent, text="Preview", padding=5)
+        preview_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.subtitle_preview_canvas = tk.Canvas(preview_frame, width=250, height=120, bg='black', relief=tk.SUNKEN, bd=2)
+        self.subtitle_preview_canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Initial preview update
+        self.after(100, self.update_subtitle_preview)
+
+    def on_subtitle_text_change(self, event=None):
+        """Update subtitle text when user types"""
+        try:
+            text = self.subtitle_text_entry.get('1.0', tk.END).strip()
+            self.subtitle_text_var.set(text)
+            # Force immediate update for better responsiveness
+            self.force_update_preview()
+            print(f"Text changed to: {text[:20]}...")
+        except Exception as e:
+            print(f"Error in text change: {e}")
+
+    def force_update_preview(self):
+        """Force immediate preview update"""
+        try:
+            self.update_subtitle_preview()
+            # Also update selected subtitle if one is selected
+            self.auto_update_selected_subtitle()
+            # Update color previews
+            self.update_color_previews()
+        except Exception as e:
+            print(f"Error in force update: {e}")
+
+    def update_color_previews(self):
+        """Update color preview indicators"""
+        try:
+            # Color mapping for preview
+            color_map = {
+                'white': 'white', 'black': 'black', 'yellow': 'yellow',
+                'red': 'red', 'blue': 'blue', 'green': 'green',
+                'orange': 'orange', 'purple': 'purple', 'gray': 'gray',
+                'darkgray': 'darkgray'
+            }
+
+            # Update font color preview
+            if hasattr(self, 'font_color_preview'):
+                font_color = self.subtitle_font_color_var.get()
+                preview_color = color_map.get(font_color, font_color)
+                self.font_color_preview.config(fg=preview_color)
+
+            # Update outline color preview
+            if hasattr(self, 'outline_color_preview'):
+                outline_color = self.subtitle_outline_color_var.get()
+                preview_color = color_map.get(outline_color, outline_color)
+                self.outline_color_preview.config(fg=preview_color)
+
+            # Update background color preview
+            if hasattr(self, 'bg_color_preview'):
+                bg_color = self.subtitle_background_color_var.get()
+                preview_color = color_map.get(bg_color, bg_color)
+                self.bg_color_preview.config(fg=preview_color)
+
+        except Exception as e:
+            print(f"Error updating color previews: {e}")
+
+    def on_font_size_change(self, value):
+        """Handle font size scale change"""
+        try:
+            # Force immediate update
+            self.force_update_preview()
+            print(f"Font size changed to: {value}")
+        except Exception as e:
+            print(f"Error in font size change: {e}")
+
+    def on_outline_width_change(self, value):
+        """Handle outline width scale change"""
+        try:
+            # Force immediate update
+            self.force_update_preview()
+            print(f"Outline width changed to: {value}")
+        except Exception as e:
+            print(f"Error in outline width change: {e}")
+
+    def on_font_color_change(self, event=None):
+        """Handle font color change"""
+        try:
+            # Force immediate update
+            self.force_update_preview()
+            print(f"Font color changed to: {self.subtitle_font_color_var.get()}")
+        except Exception as e:
+            print(f"Error in font color change: {e}")
+
+    def on_outline_color_change(self, event=None):
+        """Handle outline color change"""
+        try:
+            # Force immediate update
+            self.force_update_preview()
+            print(f"Outline color changed to: {self.subtitle_outline_color_var.get()}")
+        except Exception as e:
+            print(f"Error in outline color change: {e}")
+
+    def on_background_enable_change(self):
+        """Handle background enable/disable change"""
+        try:
+            # Force immediate update
+            self.force_update_preview()
+            print(f"Background enabled: {self.subtitle_background_enabled_var.get()}")
+        except Exception as e:
+            print(f"Error in background enable change: {e}")
+
+    def on_background_opacity_change(self, value):
+        """Handle background opacity change"""
+        try:
+            # Force immediate update
+            self.force_update_preview()
+            print(f"Background opacity changed to: {value}")
+        except Exception as e:
+            print(f"Error in background opacity change: {e}")
+
+    def on_background_padding_change(self, value):
+        """Handle background padding change"""
+        try:
+            # Force immediate update
+            self.force_update_preview()
+            print(f"Background padding changed to: {value}")
+        except Exception as e:
+            print(f"Error in background padding change: {e}")
+
+    def auto_update_selected_subtitle(self):
+        """Automatically update selected subtitle with current settings"""
+        if self._selected_id and self._selected_id in self._subtitles:
+            try:
+                text = self.subtitle_text_entry.get('1.0', tk.END).strip()
+                if text:  # Only update if there's text
+                    subtitle_data = self._overlays[self._selected_id]
+                    subtitle_data.update({
+                        'text': text,
+                        'font_size': self.subtitle_font_size_var.get(),
+                        'font_color': self.subtitle_font_color_var.get(),
+                        'outline_color': self.subtitle_outline_color_var.get(),
+                        'outline_width': self.subtitle_outline_width_var.get(),
+                        'background_enabled': self.subtitle_background_enabled_var.get(),
+                        'background_color': self.subtitle_background_color_var.get(),
+                        'background_opacity': self.subtitle_background_opacity_var.get(),
+                        'background_padding': self.subtitle_background_padding_var.get()
+                    })
+                    # Redraw the canvas to show changes
+                    self.redraw_all()
+            except Exception as e:
+                print(f"Error in auto update: {e}")
+
+    def update_subtitle_preview(self, event=None):
+        """Update the subtitle preview canvas"""
+        try:
+            from PIL import Image, ImageDraw, ImageFont, ImageTk
+
+            # Create preview image (larger for better visibility)
+            preview_img = Image.new('RGB', (250, 120), 'black')
+            draw = ImageDraw.Draw(preview_img)
+
+            # Get current text from text widget with safe fallback
+            try:
+                text = self.subtitle_text_entry.get('1.0', tk.END).strip() or "Sample Text"
+            except:
+                text = "Sample Text"
+
+            # Get values with safe fallbacks
+            try:
+                font_size = self.subtitle_font_size_var.get() or 24
+            except:
+                font_size = 24
+
+            try:
+                font_color = self.subtitle_font_color_var.get() or "white"
+            except:
+                font_color = "white"
+
+            try:
+                outline_color = self.subtitle_outline_color_var.get() or "black"
+            except:
+                outline_color = "black"
+
+            try:
+                outline_width = self.subtitle_outline_width_var.get() or 2
+            except:
+                outline_width = 2
+
+            try:
+                bg_enabled = self.subtitle_background_enabled_var.get()
+            except:
+                bg_enabled = False
+
+            try:
+                bg_color = self.subtitle_background_color_var.get() or "black"
+            except:
+                bg_color = "black"
+
+            try:
+                bg_opacity = self.subtitle_background_opacity_var.get() or 80
+            except:
+                bg_opacity = 80
+
+            try:
+                bg_padding = self.subtitle_background_padding_var.get() or 10
+            except:
+                bg_padding = 10
+
+            # Update the text variable
+            self.subtitle_text_var.set(text)
+
+            # Try to use a system font with better scaling
+            try:
+                # Scale font size for preview but make it more visible
+                preview_font_size = max(12, min(font_size * 0.8, 32))  # Better scaling
+                font = ImageFont.truetype("arial.ttf", preview_font_size)
+            except:
+                try:
+                    # Try other common fonts
+                    preview_font_size = max(12, min(font_size * 0.8, 32))
+                    font = ImageFont.truetype("calibri.ttf", preview_font_size)
+                except:
+                    try:
+                        # Try default with size
+                        font = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", preview_font_size)
+                    except:
+                        font = ImageFont.load_default()
+
+            # Get text size
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+
+            # Center text in the larger preview
+            x = (250 - text_width) // 2
+            y = (120 - text_height) // 2
+
+            # Draw background box if enabled
+            if bg_enabled:
+                # Calculate background rectangle
+                bg_x1 = x - bg_padding // 2
+                bg_y1 = y - bg_padding // 2
+                bg_x2 = x + text_width + bg_padding // 2
+                bg_y2 = y + text_height + bg_padding // 2
+
+                # Create semi-transparent background
+                bg_overlay = Image.new('RGBA', (250, 120), (0, 0, 0, 0))
+                bg_draw = ImageDraw.Draw(bg_overlay)
+
+                # Convert color name to RGB
+                color_map = {
+                    'black': (0, 0, 0),
+                    'white': (255, 255, 255),
+                    'gray': (128, 128, 128),
+                    'darkgray': (64, 64, 64),
+                    'blue': (0, 0, 255),
+                    'red': (255, 0, 0),
+                    'green': (0, 255, 0),
+                    'yellow': (255, 255, 0),
+                    'orange': (255, 165, 0),
+                    'purple': (128, 0, 128)
+                }
+                bg_rgb = color_map.get(bg_color, (0, 0, 0))
+                bg_alpha = int(255 * bg_opacity / 100)
+
+                bg_draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2],
+                                fill=(*bg_rgb, bg_alpha))
+
+                # Composite background with main image
+                preview_img = Image.alpha_composite(preview_img.convert('RGBA'), bg_overlay).convert('RGB')
+                draw = ImageDraw.Draw(preview_img)
+
+            # Convert color names to actual colors for drawing
+            color_map = {
+                'white': 'white', 'black': 'black', 'yellow': 'yellow',
+                'red': 'red', 'blue': 'blue', 'green': 'green',
+                'orange': 'orange', 'purple': 'purple', 'gray': 'gray',
+                'darkgray': 'darkgray'
+            }
+
+            actual_font_color = color_map.get(font_color.lower(), font_color)
+            actual_outline_color = color_map.get(outline_color.lower(), outline_color)
+
+            # Draw text with outline (make outline more visible)
+            if outline_width > 0:
+                # Draw outline with multiple passes for better visibility
+                for dx in range(-outline_width, outline_width + 1):
+                    for dy in range(-outline_width, outline_width + 1):
+                        if dx != 0 or dy != 0:
+                            draw.text((x + dx, y + dy), text, font=font, fill=actual_outline_color)
+
+            # Draw main text
+            draw.text((x, y), text, font=font, fill=actual_font_color)
+
+            # Convert to PhotoImage and display
+            self.subtitle_preview_img = ImageTk.PhotoImage(preview_img)
+            self.subtitle_preview_canvas.delete("all")
+            self.subtitle_preview_canvas.create_image(125, 60, image=self.subtitle_preview_img)
+
+            # Force canvas update
+            self.subtitle_preview_canvas.update_idletasks()
+
+        except Exception as e:
+            print(f"Error updating subtitle preview: {e}")
+            # Create a simple error preview
+            try:
+                self.subtitle_preview_canvas.delete("all")
+                self.subtitle_preview_canvas.create_text(100, 50, text="Preview Error", fill="red", font=("Arial", 10))
+            except:
+                pass
+
+    def add_subtitle(self):
+        """Add a new subtitle element to the canvas"""
+        text = self.subtitle_text_entry.get('1.0', tk.END).strip()
+        if not text:
+            messagebox.showwarning("Warning", "Please enter subtitle text first.")
+            return
+
+        # Create subtitle data
+        subtitle_id = f"subtitle_{len(self._subtitles)}"
+        subtitle_data = {
+            'type': 'subtitle',
+            'text': text,
+            'font_size': self.subtitle_font_size_var.get(),
+            'font_color': self.subtitle_font_color_var.get(),
+            'outline_color': self.subtitle_outline_color_var.get(),
+            'outline_width': self.subtitle_outline_width_var.get(),
+            'background_enabled': self.subtitle_background_enabled_var.get(),
+            'background_color': self.subtitle_background_color_var.get(),
+            'background_opacity': self.subtitle_background_opacity_var.get(),
+            'background_padding': self.subtitle_background_padding_var.get(),
+            'x': self.disp_w // 4,
+            'y': self.disp_h - 100,  # Default to bottom
+            'w': self.disp_w // 2,
+            'h': 50
+        }
+
+        self._overlays[subtitle_id] = subtitle_data
+        self._subtitles[subtitle_id] = subtitle_data
+        self.redraw_all()
+
+    def update_selected_subtitle(self):
+        """Update the selected subtitle with current settings"""
+        if self._selected_id and self._selected_id in self._subtitles:
+            text = self.subtitle_text_entry.get('1.0', tk.END).strip()
+            if not text:
+                messagebox.showwarning("تحذير", "يرجى إدخال نص الترجمة أولاً.")
+                return
+
+            subtitle_data = self._overlays[self._selected_id]
+            subtitle_data.update({
+                'text': text,
+                'font_size': self.subtitle_font_size_var.get(),
+                'font_color': self.subtitle_font_color_var.get(),
+                'outline_color': self.subtitle_outline_color_var.get(),
+                'outline_width': self.subtitle_outline_width_var.get(),
+                'background_enabled': self.subtitle_background_enabled_var.get(),
+                'background_color': self.subtitle_background_color_var.get(),
+                'background_opacity': self.subtitle_background_opacity_var.get(),
+                'background_padding': self.subtitle_background_padding_var.get()
+            })
+
+            self.redraw_all()
+            messagebox.showinfo("تم التحديث", "تم تحديث إعدادات الترجمة المحددة بنجاح!")
+        else:
+            messagebox.showinfo("معلومات", "يرجى تحديد عنصر ترجمة أولاً.\nانقر على أي ترجمة في الفيديو لتحديدها.")
+
+    def update_selection_status(self):
+        """Update the selection status display"""
+        if hasattr(self, 'selection_status_label'):
+            if self._selected_id and self._selected_id in self._subtitles:
+                self.selection_status_label.config(text=f"Selected: Subtitle {self._selected_id[-8:]}",
+                                                  bg="#4CAF50", fg="white")
+            else:
+                self.selection_status_label.config(text="No subtitle selected",
+                                                  bg="#FF6B6B", fg="white")
+
+    def load_subtitle_settings(self, subtitle_id):
+        """Load settings from selected subtitle into the editor"""
+        if subtitle_id in self._subtitles:
+            data = self._subtitles[subtitle_id]
+
+            # Load text
+            self.subtitle_text_entry.delete('1.0', tk.END)
+            self.subtitle_text_entry.insert('1.0', data.get('text', ''))
+
+            # Load font settings
+            self.subtitle_font_size_var.set(data.get('font_size', 24))
+            self.subtitle_font_color_var.set(data.get('font_color', 'white'))
+            self.subtitle_outline_color_var.set(data.get('outline_color', 'black'))
+            self.subtitle_outline_width_var.set(data.get('outline_width', 2))
+
+            # Load background settings
+            self.subtitle_background_enabled_var.set(data.get('background_enabled', False))
+            self.subtitle_background_color_var.set(data.get('background_color', 'black'))
+            self.subtitle_background_opacity_var.set(data.get('background_opacity', 80))
+            self.subtitle_background_padding_var.set(data.get('background_padding', 10))
+
+            # Update preview and selection status
+            self.force_update_preview()  # Use force update for immediate response
+            self.update_selection_status()
+
+    def on_mousewheel(self, event):
+        """Handle vertical mouse wheel scrolling"""
+        try:
+            # Scroll vertically
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        except:
+            pass
+
+    def on_shift_mousewheel(self, event):
+        """Handle horizontal mouse wheel scrolling (with Shift key)"""
+        try:
+            # Scroll horizontally when Shift is held
+            self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+        except:
+            pass
+
+    def on_ctrl_mousewheel(self, event):
+        """Handle zoom with Ctrl + mouse wheel"""
+        try:
+            # Get current zoom level (if not set, default to 1.0)
+            if not hasattr(self, 'zoom_level'):
+                self.zoom_level = 1.0
+
+            # Calculate zoom change
+            zoom_change = 0.1 if event.delta > 0 else -0.1
+            new_zoom = max(0.1, min(3.0, self.zoom_level + zoom_change))
+
+            if new_zoom != self.zoom_level:
+                self.zoom_level = new_zoom
+                self.update_zoom()
+                # Update zoom label if it exists
+                if hasattr(self, 'zoom_label'):
+                    self.zoom_label.config(text=f"Zoom: {int(self.zoom_level * 100)}%")
+        except:
+            pass
+
+    def update_zoom(self):
+        """Update canvas zoom level"""
+        try:
+            from PIL import Image, ImageTk
+
+            # Calculate new display size
+            new_w = int(self.video_w * self.zoom_level)
+            new_h = int(self.video_h * self.zoom_level)
+
+            # Resize the background image
+            frame_rgb = cv2.cvtColor(self.first_frame, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(frame_rgb)
+            resample = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS', Image.BICUBIC)
+            zoomed_img = pil_img.resize((new_w, new_h), resample)
+            self.tk_img = ImageTk.PhotoImage(zoomed_img)
+
+            # Update canvas
+            self.canvas.delete("bg_image")
+            self.canvas.create_image(0, 0, anchor='nw', image=self.tk_img, tags="bg_image")
+
+            # Update scale factors
+            self.scale_x = self.video_w / new_w
+            self.scale_y = self.video_h / new_h
+
+            # Update scroll region
+            self.canvas.configure(scrollregion=(0, 0, new_w, new_h))
+
+            # Redraw all overlays
+            self.redraw_all()
+
+        except Exception as e:
+            print(f"Error updating zoom: {e}")
+
+    def zoom_in(self):
+        """Zoom in by 10%"""
+        if not hasattr(self, 'zoom_level'):
+            self.zoom_level = 1.0
+        self.zoom_level = min(3.0, self.zoom_level + 0.1)
+        self.update_zoom()
+        self.zoom_label.config(text=f"Zoom: {int(self.zoom_level * 100)}%")
+
+    def zoom_out(self):
+        """Zoom out by 10%"""
+        if not hasattr(self, 'zoom_level'):
+            self.zoom_level = 1.0
+        self.zoom_level = max(0.1, self.zoom_level - 0.1)
+        self.update_zoom()
+        self.zoom_label.config(text=f"Zoom: {int(self.zoom_level * 100)}%")
+
+    def reset_zoom(self):
+        """Reset zoom to 100%"""
+        self.zoom_level = 1.0
+        self.update_zoom()
+        self.zoom_label.config(text=f"Zoom: {int(self.zoom_level * 100)}%")
+
+    def on_key_press(self, event):
+        """Handle keyboard scrolling"""
+        try:
+            if event.keysym == "Up":
+                self.canvas.yview_scroll(-1, "units")
+            elif event.keysym == "Down":
+                self.canvas.yview_scroll(1, "units")
+            elif event.keysym == "Left":
+                self.canvas.xview_scroll(-1, "units")
+            elif event.keysym == "Right":
+                self.canvas.xview_scroll(1, "units")
+            elif event.keysym == "Prior":  # Page Up
+                self.canvas.yview_scroll(-1, "pages")
+            elif event.keysym == "Next":   # Page Down
+                self.canvas.yview_scroll(1, "pages")
+            elif event.keysym == "Home":
+                self.canvas.xview_moveto(0)
+                self.canvas.yview_moveto(0)
+            elif event.keysym == "End":
+                self.canvas.xview_moveto(1)
+                self.canvas.yview_moveto(1)
+        except:
+            pass
 
     def redraw_all(self):
         self.canvas.delete("overlay", "handle", "temp")
@@ -4029,6 +5563,49 @@ class OverlayEditorWindow(tk.Toplevel):
                     logo_resized = data['pil_img'].resize((w, h), resample)
                     data['tk_logo'] = ImageTk.PhotoImage(logo_resized)
                     self.canvas.create_image(x, y, anchor='nw', image=data['tk_logo'], tags=tags)
+            elif data['type'] == 'subtitle':
+                # Draw subtitle with visual representation
+                bg_enabled = data.get('background_enabled', False)
+                if bg_enabled:
+                    # Draw background box representation
+                    bg_color = data.get('background_color', 'black')
+                    bg_opacity = data.get('background_opacity', 80)
+                    bg_padding = data.get('background_padding', 10)
+
+                    color_map = {
+                        'black': '#000000',
+                        'white': '#FFFFFF',
+                        'gray': '#808080',
+                        'darkgray': '#404040',
+                        'blue': '#0000FF',
+                        'red': '#FF0000',
+                        'green': '#00FF00',
+                        'yellow': '#FFFF00',
+                        'orange': '#FFA500',
+                        'purple': '#800080'
+                    }
+                    bg_hex = color_map.get(bg_color, '#000000')
+
+                    # Draw background with padding representation
+                    bg_x = x - bg_padding//2
+                    bg_y = y - bg_padding//2
+                    bg_w = w + bg_padding
+                    bg_h = h + bg_padding
+
+                    # Create semi-transparent effect by using stipple
+                    stipple_pattern = "gray75" if bg_opacity > 50 else "gray50"
+                    self.canvas.create_rectangle(bg_x, bg_y, bg_x + bg_w, bg_y + bg_h,
+                                               fill=bg_hex, stipple=stipple_pattern,
+                                               outline="orange", width=2, tags=tags)
+                    text_color = "white" if bg_color in ['black', 'darkgray', 'blue', 'red'] else "black"
+                else:
+                    # Draw transparent subtitle box
+                    self.canvas.create_rectangle(x, y, x + w, y + h, fill="yellow", stipple="gray25", outline="orange", width=2, tags=tags)
+                    text_color = "black"
+
+                # Add text label
+                text_preview = data.get('text', 'Subtitle')[:20] + ('...' if len(data.get('text', '')) > 20 else '')
+                self.canvas.create_text(x + w//2, y + h//2, text=text_preview, fill=text_color, font=("Arial", 8, "bold"), tags=tags)
             elif data['type'] == 'blur':
                 self.canvas.create_rectangle(x, y, x + w, y + h, fill="red", stipple="gray50", outline="white", width=1, tags=tags)
             elif data['type'] == 'pixelate':
@@ -4040,10 +5617,39 @@ class OverlayEditorWindow(tk.Toplevel):
                     self.canvas.create_rectangle(x, y, x + w, y + h, outline=color, width=thickness, tags=tags)
                 else:
                     self.canvas.create_oval(x, y, x + w, y + h, outline=color, width=thickness, tags=tags)
-            
+
             if oid == self._selected_id:
                 self.canvas.create_rectangle(x, y, x + w, y + h, outline="#007ACC", width=2, dash=(6, 2), tags=("handle", oid))
-                self.canvas.create_rectangle(x + w - 5, y + h - 5, x + w + 5, y + h + 5, fill="#007ACC", outline="white", tags=("handle", "resize_handle", oid))
+
+        # Update scroll region to include all elements
+        self.update_scroll_region()
+
+    def update_scroll_region(self):
+        """Update the scroll region to include all elements"""
+        try:
+            # Calculate the bounding box of all elements
+            min_x, min_y = 0, 0
+            max_x, max_y = self.disp_w, self.disp_h
+
+            for data in self._overlays.values():
+                x, y, w, h = data['x'], data['y'], data['w'], data['h']
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x + w)
+                max_y = max(max_y, y + h)
+
+            # Add some padding
+            padding = 50
+            min_x -= padding
+            min_y -= padding
+            max_x += padding
+            max_y += padding
+
+            # Update scroll region
+            self.canvas.configure(scrollregion=(min_x, min_y, max_x, max_y))
+        except:
+            # Fallback to default scroll region
+            self.canvas.configure(scrollregion=(0, 0, self.disp_w, self.disp_h))
 
     def load_overlays(self):
         from PIL import Image
@@ -4060,7 +5666,7 @@ class OverlayEditorWindow(tk.Toplevel):
 
     def add_logo(self):
         from PIL import Image
-        path = filedialog.askopenfilename(title="اختر شعار", filetypes=[("PNG Images", "*.png")], parent=self)
+        path = filedialog.askopenfilename(title="Select Logo", filetypes=[("PNG Images", "*.png")], parent=self)
         if not path: return
         try:
             img = Image.open(path).convert("RGBA")
@@ -4070,26 +5676,132 @@ class OverlayEditorWindow(tk.Toplevel):
             oid = f"logo_{time.time()}"
             self._overlays[oid] = {'type': 'logo', 'path': path, 'x': 50, 'y': 50, 'w': new_w, 'h': new_h, 'pil_img': img}
             self._selected_id = oid
+            self.update_selection_status()
             self.redraw_all()
         except Exception as e:
-            messagebox.showerror("خطأ", f"فشل تحميل الصورة: {e}", parent=self)
+            messagebox.showerror("Error", f"Failed to load image: {e}", parent=self)
 
     def delete_selected(self):
         if self._selected_id in self._overlays:
+            # Remove from subtitles dict if it's a subtitle
+            if self._selected_id in self._subtitles:
+                del self._subtitles[self._selected_id]
             del self._overlays[self._selected_id]
             self._selected_id = None
+            self.update_selection_status()
             self.redraw_all()
 
     def on_close(self):
         self.destroy()
 
+    def apply_changes(self):
+        """Apply changes without closing the window"""
+        try:
+            # Clean up image references for overlays
+            for data in self._overlays.values():
+                data.pop('pil_img', None)
+                data.pop('tk_logo', None)
+
+            # Apply subtitle settings to main app if there are subtitle elements
+            subtitle_elements = [data for data in self._overlays.values() if data.get('type') == 'subtitle']
+            if subtitle_elements and hasattr(self, 'parent_app'):
+                # Use the first subtitle element's settings for SRT subtitles
+                subtitle_settings = subtitle_elements[0]
+                self.apply_subtitle_settings_to_main_app(subtitle_settings)
+
+                # Remove subtitle elements from overlays to avoid duplication
+                self._overlays = {k: v for k, v in self._overlays.items() if v.get('type') != 'subtitle'}
+                print(f"Applied subtitle settings and removed {len(subtitle_elements)} subtitle elements")
+
+            self.saved = True
+
+            # Show confirmation message
+            from tkinter import messagebox
+            if subtitle_elements:
+                messagebox.showinfo("تم تطبيق التغييرات",
+                    "✅ تم تطبيق تغييرات العناصر بنجاح!\n"
+                    "🎨 إعدادات الخط والخلفية طُبقت على ترجمة SRT.\n"
+                    "📝 يمكنك الآن الاستمرار في التحرير أو إغلاق النافذة.")
+            else:
+                messagebox.showinfo("تم تطبيق التغييرات", "تم تطبيق تغييرات العناصر بنجاح!\nيمكنك الآن الاستمرار في التحرير أو إغلاق النافذة.")
+
+        except Exception as e:
+            print(f"Error in apply_changes: {e}")
+            from tkinter import messagebox
+            messagebox.showerror("خطأ", f"حدث خطأ أثناء تطبيق التغييرات: {e}")
+
     def save_and_close(self):
-        
-        for data in self._overlays.values():
-            data.pop('pil_img', None)
-            data.pop('tk_logo', None)
-        self.saved = True
-        self.destroy()
+        """Save changes and close the window"""
+        try:
+            # Clean up image references for overlays
+            for data in self._overlays.values():
+                data.pop('pil_img', None)
+                data.pop('tk_logo', None)
+
+            # Apply subtitle settings to main app if there are subtitle elements
+            subtitle_elements = [data for data in self._overlays.values() if data.get('type') == 'subtitle']
+            if subtitle_elements and hasattr(self, 'parent_app'):
+                # Use the first subtitle element's settings for SRT subtitles
+                subtitle_settings = subtitle_elements[0]
+                self.apply_subtitle_settings_to_main_app(subtitle_settings)
+
+                # Remove subtitle elements from overlays to avoid duplication
+                # Keep only non-subtitle overlays
+                self._overlays = {k: v for k, v in self._overlays.items() if v.get('type') != 'subtitle'}
+                print(f"Removed {len(subtitle_elements)} subtitle elements to avoid duplication with SRT")
+
+            self.saved = True
+
+            # Show confirmation message
+            from tkinter import messagebox
+            if subtitle_elements:
+                messagebox.showinfo("تم الحفظ",
+                    "✅ تم حفظ جميع التغييرات بنجاح!\n"
+                    "🎨 إعدادات الخط والخلفية ستطبق على ترجمة SRT.\n"
+                    "📝 النصوص التجريبية تم حذفها لتجنب التداخل.")
+            else:
+                messagebox.showinfo("تم الحفظ", "تم حفظ جميع التغييرات بنجاح!")
+
+            # Close the window
+            self.destroy()
+
+        except Exception as e:
+            print(f"Error in save_and_close: {e}")
+            from tkinter import messagebox
+            messagebox.showerror("خطأ", f"حدث خطأ أثناء الحفظ: {e}")
+            # Still close the window even if there's an error
+            self.destroy()
+
+    def apply_subtitle_settings_to_main_app(self, subtitle_settings):
+        """Apply subtitle settings from element editor to main app SRT settings"""
+        try:
+            if hasattr(self, 'parent_app'):
+                app = self.parent_app
+
+                # Apply font settings
+                if hasattr(app, 'subtitle_font_size_var'):
+                    app.subtitle_font_size_var.set(subtitle_settings.get('font_size', 24))
+                if hasattr(app, 'subtitle_font_color_var'):
+                    app.subtitle_font_color_var.set(subtitle_settings.get('font_color', 'white'))
+                if hasattr(app, 'subtitle_outline_color_var'):
+                    app.subtitle_outline_color_var.set(subtitle_settings.get('outline_color', 'black'))
+                if hasattr(app, 'subtitle_outline_width_var'):
+                    app.subtitle_outline_width_var.set(subtitle_settings.get('outline_width', 2))
+
+                # Apply background settings
+                if hasattr(app, 'subtitle_background_enabled_var'):
+                    app.subtitle_background_enabled_var.set(subtitle_settings.get('background_enabled', False))
+                if hasattr(app, 'subtitle_background_color_var'):
+                    app.subtitle_background_color_var.set(subtitle_settings.get('background_color', 'black'))
+                if hasattr(app, 'subtitle_background_opacity_var'):
+                    app.subtitle_background_opacity_var.set(subtitle_settings.get('background_opacity', 80))
+                if hasattr(app, 'subtitle_background_padding_var'):
+                    app.subtitle_background_padding_var.set(subtitle_settings.get('background_padding', 10))
+
+                print("Applied subtitle settings to main app")
+
+        except Exception as e:
+            print(f"Error applying subtitle settings to main app: {e}")
 
     def get_item_at(self, x, y):
         items = self.canvas.find_overlapping(x - 2, y - 2, x + 2, y + 2)
@@ -4097,7 +5809,7 @@ class OverlayEditorWindow(tk.Toplevel):
             for item in reversed(items):
                 tags = self.canvas.gettags(item)
                 if priority in tags:
-                    oid = next((t for t in tags if t not in ['overlay', 'handle', 'resize_handle', 'logo', 'rect', 'circle', 'blur', 'pixelate']), None)
+                    oid = next((t for t in tags if t not in ['overlay', 'handle', 'resize_handle', 'logo', 'rect', 'circle', 'blur', 'pixelate', 'subtitle']), None)
                     return oid, tags
         return None, []
 
@@ -4109,6 +5821,11 @@ class OverlayEditorWindow(tk.Toplevel):
         if mode == 'move':
             if self._selected_id != oid:
                 self._selected_id = oid
+                # Load subtitle settings if a subtitle is selected
+                if oid and oid in self._subtitles:
+                    self.load_subtitle_settings(oid)
+                else:
+                    self.update_selection_status()
                 self.redraw_all()
             if oid:
                 self._drag_data = {'id': oid, 'x': event.x, 'y': event.y}
@@ -4126,6 +5843,36 @@ class OverlayEditorWindow(tk.Toplevel):
             self._selected_id = None
             self._drag_data = {'x': event.x, 'y': event.y, 'mode': f'draw_{mode}'}
             self.canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="white", width=2, dash=(), tags="temp")
+        elif mode == 'subtitle':
+            # Add subtitle at clicked position
+            text = self.subtitle_text_entry.get('1.0', tk.END).strip()
+            if not text:
+                messagebox.showwarning("Warning", "Please enter subtitle text first.")
+                return
+
+            subtitle_id = f"subtitle_{time.time()}"
+            subtitle_data = {
+                'type': 'subtitle',
+                'text': text,
+                'font_size': self.subtitle_font_size_var.get(),
+                'font_color': self.subtitle_font_color_var.get(),
+                'outline_color': self.subtitle_outline_color_var.get(),
+                'outline_width': self.subtitle_outline_width_var.get(),
+                'background_enabled': self.subtitle_background_enabled_var.get(),
+                'background_color': self.subtitle_background_color_var.get(),
+                'background_opacity': self.subtitle_background_opacity_var.get(),
+                'background_padding': self.subtitle_background_padding_var.get(),
+                'x': event.x - 100,  # Center around click
+                'y': event.y - 25,
+                'w': 200,
+                'h': 50
+            }
+
+            self._overlays[subtitle_id] = subtitle_data
+            self._subtitles[subtitle_id] = subtitle_data
+            self._selected_id = subtitle_id
+            self.load_subtitle_settings(subtitle_id)  # Load settings for the new subtitle
+            self.redraw_all()
 
     def _add_pixelate_at(self, x, y):
         radius = self.brush_size.get() // 2
