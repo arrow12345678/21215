@@ -2520,26 +2520,66 @@ def process_video_chunk(chunk_settings, cancel_event, status_callback=None, stat
         if chunk_settings.get('compression_enabled', False):
             preset_name = chunk_settings.get('quality_preset', '1080p (Full HD)')
             preset_config = QUALITY_PRESETS.get(preset_name, QUALITY_PRESETS['1080p (Full HD)'])
-            
-            filters = [f"setpts={1/chunk_settings['speed_factor']}*PTS"]
+
+            # إعداد فلاتر الفيديو
+            video_filters = [f"setpts={1/chunk_settings['speed_factor']}*PTS"]
             if preset_config['resolution']:
-                filters.append(f"scale=-2:{preset_config['resolution']}")
-            
-            command.extend(['-vf', ",".join(filters)])
+                video_filters.append(f"scale=-2:{preset_config['resolution']}")
+
+            # إضافة فلاتر الفيديو والصوت
+            command.extend(['-vf', ",".join(video_filters)])
             command.extend(['-filter:a', f"atempo={chunk_settings['speed_factor']}"])
+
+            # إعدادات الضغط للفيديو
             command.extend(['-c:v', 'libx264', '-crf', preset_config['crf'], '-preset', preset_config['preset']])
+
+            # إضافة إعدادات إضافية للضغط إذا كانت متوفرة
+            if preset_config.get('tune'):
+                command.extend(['-tune', preset_config['tune']])
+            if preset_config.get('profile'):
+                command.extend(['-profile:v', preset_config['profile']])
+            if preset_config.get('level'):
+                command.extend(['-level', preset_config['level']])
+
+            # إعدادات الصوت للضغط
+            command.extend(['-c:a', 'aac'])
+
         else:
             command.extend(['-filter_complex', f"[0:v]setpts={1/chunk_settings['speed_factor']}*PTS[v];[1:a]atempo={chunk_settings['speed_factor']}[a]"])
             command.extend(['-map', '[v]', '-map', '[a]'])
 
         command.append(os.path.normpath(output_path))
-        
 
-        process = subprocess.run(command, capture_output=True, text=True, creationflags=SUBPROCESS_CREATION_FLAGS)
-        if process.returncode != 0:
-            send_status(f"الجزء {chunk_index + 1}: خطأ FFmpeg: {process.stderr}")
+        # طباعة الأمر للتشخيص (اختياري)
+        if chunk_settings.get('debug_mode', False):
+            send_status(f"الجزء {chunk_index + 1}: تشغيل الأمر: {' '.join(command[:10])}...")
+
+        try:
+            process = subprocess.run(command, capture_output=True, text=True, creationflags=SUBPROCESS_CREATION_FLAGS, timeout=3600)
+
+            if process.returncode != 0:
+                error_msg = f"الجزء {chunk_index + 1}: خطأ FFmpeg (رمز الخطأ: {process.returncode})"
+                if process.stderr:
+                    error_msg += f"\nتفاصيل الخطأ: {process.stderr[:500]}"  # أول 500 حرف من رسالة الخطأ
+                if process.stdout:
+                    error_msg += f"\nمعلومات إضافية: {process.stdout[:200]}"
+                send_status(error_msg)
+                return None
+
+            # التحقق من وجود الملف الناتج
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                send_status(f"الجزء {chunk_index + 1}: تحذير - الملف الناتج غير موجود أو فارغ")
+                return None
+
+            send_status(f"الجزء {chunk_index + 1}: تم إنتاج الملف بنجاح ({os.path.getsize(output_path)} بايت)")
+            return output_path
+
+        except subprocess.TimeoutExpired:
+            send_status(f"الجزء {chunk_index + 1}: انتهت مهلة المعالجة (أكثر من ساعة)")
             return None
-        return output_path
+        except Exception as e:
+            send_status(f"الجزء {chunk_index + 1}: خطأ في تشغيل FFmpeg: {e}")
+            return None
 
     except Exception as e:
         send_status(f"الجزء {chunk_index + 1}: خطأ غير متوقع: {e}")
@@ -3848,35 +3888,42 @@ class App(tk.Tk):
         self.stop_button.config(state=tk.DISABLED)
 
     def _update_compression_controls(self, event=None):
+        """تحديث حالة عناصر التحكم في الضغط"""
         is_enabled = self.compression_enabled_var.get()
-        state = tk.NORMAL if is_enabled else tk.DISABLED
 
-        
-        for child in self.compression_options_view.winfo_children()[0].winfo_children():
-            if isinstance(child, (ttk.Combobox, ttk.Scale, ttk.Entry, ttk.Checkbutton, ttk.Label)):
-                
-                if child != self.compression_options_view.winfo_children()[0].winfo_children()[0]:
-                     child.config(state=state)
+        # تفعيل/تعطيل عناصر التحكم في الضغط
+        try:
+            # تحديث حالة قائمة إعدادات الجودة
+            if hasattr(self, 'quality_preset_combo'):
+                state = tk.NORMAL if is_enabled else tk.DISABLED
+                self.quality_preset_combo.config(state=state)
 
-        if not is_enabled:
-            return
+            # تحديث أي عناصر أخرى متعلقة بالضغط
+            if hasattr(self, 'compression_options_view'):
+                try:
+                    for child in self.compression_options_view.winfo_children():
+                        if hasattr(child, 'winfo_children'):
+                            for subchild in child.winfo_children():
+                                if isinstance(subchild, (ttk.Combobox, ttk.Scale, ttk.Entry, ttk.Checkbutton)):
+                                    try:
+                                        subchild.config(state=tk.NORMAL if is_enabled else tk.DISABLED)
+                                    except:
+                                        pass  # تجاهل الأخطاء في تحديث العناصر
+                except:
+                    pass  # تجاهل أخطاء الوصول للعناصر
 
-        
-        mode = self.encoding_mode_combo.get()
-        if mode == "الجودة الثابتة (CRF)":
-            self.quality_label.config(text="قيمة CRF (0-51):")
-            self.quality_scale.config(from_=0, to=51, variable=self.quality_preset_var)
-            self.quality_entry.config(textvariable=self.quality_preset_var)
-            self.two_pass_check.config(state=tk.DISABLED) 
-        else: 
-            self.quality_label.config(text="معدل البت (kbps):")
-            self.quality_scale.config(from_=500, to=10000, variable=self.quality_preset_var)
-            self.quality_entry.config(textvariable=self.quality_preset_var)
-            self.two_pass_check.config(state=tk.NORMAL)
+        except Exception as e:
+            print(f"خطأ في تحديث عناصر التحكم في الضغط: {e}")
+            # لا نريد أن يتوقف التطبيق بسبب هذا الخطأ
 
     def toggle_simple_compression_widgets(self):
-        state = tk.NORMAL if self.compression_enabled_var.get() else tk.DISABLED
-        self.quality_preset_combo.config(state=state)
+        """تفعيل/تعطيل عناصر التحكم البسيطة في الضغط"""
+        try:
+            state = tk.NORMAL if self.compression_enabled_var.get() else tk.DISABLED
+            if hasattr(self, 'quality_preset_combo'):
+                self.quality_preset_combo.config(state=state)
+        except Exception as e:
+            print(f"خطأ في تحديث عناصر الضغط البسيطة: {e}")
 
 
 class OverlayEditorWindow(tk.Toplevel):
@@ -4319,99 +4366,6 @@ class WaveformEditorWindow(tk.Toplevel):
                 except OSError: pass
 
 
-
-QUALITY_PRESETS = {
-    "أعلى جودة ممكنة (ملف كبير)": {
-        "crf": "15",        
-        "preset": "veryslow",   
-        "resolution": None,
-        "tune": "film",
-        "profile": "high",
-        "level": "4.1",
-        "additional_params": ["-x264-params", "ref=16:bframes=16:me=umh:subme=10"]
-    },
-    "جودة عالية جداً (4K)": {
-        "crf": "18",
-        "preset": "slow",
-        "resolution": 2160,
-        "tune": "film",
-        "profile": "high",
-        "level": "5.1",
-        "additional_params": ["-x264-params", "ref=8:bframes=8"]
-    },
-    "1080p (Full HD) - جودة ممتازة": {
-        "crf": "20",
-        "preset": "slow",
-        "resolution": 1080,
-        "tune": "film",
-        "profile": "high",
-        "level": "4.0",
-        "additional_params": ["-x264-params", "ref=5:bframes=5"]
-    },
-    "1080p (Full HD) - متوازن": {
-        "crf": "23",
-        "preset": "medium",
-        "resolution": 1080,
-        "tune": "film",
-        "profile": "main",
-        "level": "4.0",
-        "additional_params": []
-    },
-    "720p (HD) - جودة عالية": {
-        "crf": "24",
-        "preset": "medium",
-        "resolution": 720,
-        "tune": "film",
-        "profile": "main",
-        "level": "3.1",
-        "additional_params": []
-    },
-    "720p (HD) - سريع": {
-        "crf": "26",
-        "preset": "fast",
-        "resolution": 720,
-        "tune": "film",
-        "profile": "main",
-        "level": "3.1",
-        "additional_params": []
-    },
-    "480p (SD) - جودة جيدة": {
-        "crf": "25",
-        "preset": "medium",
-        "resolution": 480,
-        "tune": "film",
-        "profile": "main",
-        "level": "3.0",
-        "additional_params": []
-    },
-    "360p - للإنترنت": {
-        "crf": "28",
-        "preset": "fast",
-        "resolution": 360,
-        "tune": "film",
-        "profile": "baseline",
-        "level": "3.0",
-        "additional_params": []
-    },
-    "240p - ضغط عالي": {
-        "crf": "30",
-        "preset": "veryfast",
-        "resolution": 240,
-        "tune": "film",
-        "profile": "baseline",
-        "level": "2.1",
-        "additional_params": []
-    },
-    "144p - أقصى ضغط": {
-        "crf": "32",
-        "preset": "ultrafast",
-        "resolution": 144,
-        "tune": "fastdecode",
-        "profile": "baseline",
-        "level": "1.3",
-        "additional_params": []
-    }
-}
 
 if __name__ == "__main__":
     if not os.path.exists(os.path.join(base_path, "temp_videos")):
